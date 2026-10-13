@@ -152,8 +152,28 @@ start data\inventory-report.html
 - [x] **M2 搬移引擎**：复制-校验-改名让位-建联接-删旧 + 撤销 + 占用检测（端到端实测通过）
 - [x] **反馈机制**：程序内脱敏报告 + GitHub Issue 预填链接 + 静态反馈页
 - [x] **M3 界面**：扫描/搬移页 + 确认窗口 + 历史撤销页 + 干跑模式
-- [ ] **M4 发布**：README 中英、LICENSE、issue 模板、GitHub Actions 出 Release
+- [x] **M4 发布**：中英 README、LICENSE、贡献指南、issue 表单、GitHub Actions（构建+测试+自动出 Release）
 - [ ] **M5 加固**：更多软件实测、兼容性清单
+
+## 发布
+
+打一个标签就会自动构建、测试并产出 Release：
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+CI 会跑内核回归（硬性门禁，不通过就不出 Release）、界面冒烟（参考项）、
+把仓库地址写进 `feedback.json`、打包 zip 并创建 Release。
+完整流程与发布前检查清单见 [docs/RELEASE.md](docs/RELEASE.md)。
+
+CI 里有两道**防回归检查**，都是踩过坑之后加的：
+
+1. **所有 `.ps1` 必须带 UTF-8 BOM** —— PowerShell 5.1 用系统 ANSI 代码页解码无 BOM 文件，
+   中文乱码会吃掉 here-string 起始标记导致脚本解析失败（这个坑踩过两次）。
+2. **版本库里不能有本机数据** —— `data/`、`_local/`、`journal.jsonl` 含真实路径与扫描结果。
+   `.gitignore` 挡的是"以后新增"，这道检查挡的是"已经误提交"。
 
 ## 反馈机制：不用自建服务器也能收到反馈
 

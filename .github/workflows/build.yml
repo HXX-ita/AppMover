@@ -25,6 +25,19 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
+      # 隐私保护：data/ 含本机真实扫描结果（目录名、路径、大小），
+      # _local/ 与 journal/feedback 含真实路径。这些都不该进仓库。
+      # .gitignore 挡的是"以后新增"，这道检查挡的是"已经误提交"。
+      - name: 确认没有本机数据被提交
+        shell: pwsh
+        run: |
+          $leaked = git ls-files | Select-String -Pattern '^(data|build|_local)/|^journal\.jsonl$|^feedback/'
+          if ($leaked) {
+            $leaked | ForEach-Object { Write-Host "误提交: $_" }
+            throw "有本机数据进入了版本库，请先移除再发布"
+          }
+          Write-Host "版本库中没有本机数据"
+
       - name: 确定版本号
         id: ver
         shell: pwsh
