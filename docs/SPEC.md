@@ -226,8 +226,26 @@ Windows 用户的 C 盘（系统盘）会被各种软件和数据文件夹塞满
 **策略**：程序清单里声明 `requireAdministrator`，启动即提权，避免"扫到一半发现权限不够"
 的割裂体验。启动时明确告知用户"本程序需要管理员权限，因为它要修改 Program Files"。
 
-**长路径**：超过 260 字符的路径需要 `\\?\` 前缀处理；文档要求用户开启
-`LongPathsEnabled`（或程序内部全程使用 `\\?\`）。
+**长路径（超过 260 字符）——两次踩坑后的结论**
+
+这个问题花了两次才搞对，过程值得记下来，因为它很容易被想当然地"修"错：
+
+| 尝试 | 做法 | 结果 |
+|---|---|---|
+| 第一次 | 给所有路径都加 `\\?\` 前缀 | **整棵树的枚举全部失败**，288 个目录的大小统计全变成 0 |
+| 诊断 | 用探针程序问运行时 | 真正的元凶不是前缀，而是**缺少 app.config**：.NET Framework 默认的 legacy path handling 会直接拒绝 `\\?\` 前缀 |
+| 当时的修法 | 改成"短路径不加前缀，超过 240 字符才加" | 看起来合理，**但不够** |
+| 第二次 | 探针实测各种 API | 即使 `Switch.System.IO.UseLegacyPathHandling=false` 已生效，**无前缀路径仍恰好在 260 字符处开始失败**（`DirectoryNotFoundException`）；而加前缀访问长短路径**一律成功**，包括 `Directory.Exists` / `File.Exists` / `File.GetAttributes` / `new FileInfo().Length` / `File.Delete` / `FileStream` |
+| 最终 | **一律加前缀**（`PathUtil.IoPath`），配置随产物生成 | 428 字符的深层路径可以正常统计、复制、删除 |
+
+所以规矩是：
+
+1. 所有文件系统调用一律经过 `PathUtil.IoPath`，它统一加 `\\?\` 前缀。
+2. 产物必须带 `AppMover.exe.config`（含 `AppContextSwitchOverrides`），否则前缀会被运行时拒绝。
+3. 枚举结果会**带着前缀**返回，凡是进入界面/日志/字符串比较的路径都必须先经
+   `PathUtil.StripExtended` 剥掉；尤其注意按路径长度截取相对路径的地方，
+   前缀长度不一致会把相对路径算错（`Copier.Verify` 与 `Relocator.CanaryReadable` 都踩过）。
+4. `PathUtil` 之外不得直接调用 `Directory.*` / `File.*`。
 
 **批处理/安装脚本**：不使用 `cmd /c mklink`（有转义与注入风险），改用
 `DeviceIoControl(FSCTL_SET_REPARSE_POINT)` 或 `CreateSymbolicLink` API 直接创建。

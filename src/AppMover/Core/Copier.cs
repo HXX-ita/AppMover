@@ -37,7 +37,7 @@ namespace AppMover.Core
         /// </summary>
         public static int RunRobocopy(string source, string target, bool preserveAcl, Action<string> log)
         {
-            Directory.CreateDirectory(target);
+            Directory.CreateDirectory(PathUtil.IoPath(target));
 
             string copyFlags = preserveAcl ? "/COPY:DATS" : "/COPY:DAT";
             string args = string.Format(
@@ -89,7 +89,7 @@ namespace AppMover.Core
                 FileEntry fe = biggest[i];
                 string rel = fe.Path.Substring(source.TrimEnd('\\').Length).TrimStart('\\');
                 string other = Path.Combine(target.TrimEnd('\\'), rel);
-                if (!File.Exists(other))
+                if (!File.Exists(PathUtil.IoPath(other)))
                 {
                     r.MissingInTarget.Add(rel);
                     continue;
@@ -129,14 +129,16 @@ namespace AppMover.Core
                 {
                     try
                     {
-                        FileAttributes a = File.GetAttributes(entries[i]);
+                        FileAttributes a = File.GetAttributes(PathUtil.IoPath(entries[i]));
                         if ((a & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint) continue;
                         if ((a & FileAttributes.Directory) == FileAttributes.Directory) stack.Push(entries[i]);
                         else
                         {
-                            FileInfo fi = new FileInfo(entries[i]);
+                            FileInfo fi = new FileInfo(PathUtil.IoPath(entries[i]));
                             FileEntry fe = new FileEntry();
-                            fe.Path = entries[i];
+                            // 剥掉 \\?\ 前缀再存：Verify 里要用它按源路径长度截出相对路径做比对，
+                            // 前缀长度不一致会把相对路径算错。
+                            fe.Path = PathUtil.StripExtended(entries[i]);
                             fe.Size = fi.Length;
                             list.Add(fe);
                             if (list.Count >= cap) return;

@@ -66,16 +66,19 @@ namespace AppMover.Core
 
             foreach (string root in roots)
             {
-                if (!Directory.Exists(root)) continue;
+                if (!Directory.Exists(PathUtil.IoPath(root))) continue;
                 if (log != null) log("扫描 " + root + " ...");
                 string[] children;
-                try { children = Directory.GetDirectories(root); }
+                try { children = Directory.GetDirectories(PathUtil.IoPath(root)); }
                 catch { continue; }
 
                 bool isDriveRoot = root.EndsWith(":\\", StringComparison.Ordinal);
 
-                foreach (string child in children)
+                foreach (string rawChild in children)
                 {
+                    // 枚举是用 \\?\ 前缀做的（长路径必需），返回的路径会带上该前缀。
+                    // 这里剥掉它，避免 \\?\ 泄漏到界面、日志与路径比较中。
+                    string child = PathUtil.StripExtended(rawChild);
                     string name = Path.GetFileName(child);
                     if (root == userProfile && name == "AppData") continue;
                     if (isDriveRoot && IsSystemRootChild(name)) continue;

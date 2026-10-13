@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
@@ -94,7 +94,7 @@ namespace AppMover
                 error = "用法: " + args[0] + " <路径> [--to D:\\] [--force]";
                 return null;
             }
-            string source = args[1];
+            string source = PathUtil.StripExtended(args[1]);
             string to = ParseOption(args, "--to", null);
             if (to == null)
             {
@@ -292,8 +292,8 @@ namespace AppMover
         private static int CmdTree(string[] args)
         {
             if (args.Length < 2) { Console.Error.WriteLine("用法: tree <路径>"); return 1; }
-            string path = args[1];
-            if (!Directory.Exists(path)) { Console.Error.WriteLine("目录不存在: " + path); return 1; }
+            string path = PathUtil.StripExtended(args[1]);
+            if (!Directory.Exists(PathUtil.IoPath(path))) { Console.Error.WriteLine("目录不存在: " + path); return 1; }
             DateTime t0 = DateTime.UtcNow;
             TreeStats st = TreeWalker.Measure(path);
             double ms = (DateTime.UtcNow - t0).TotalMilliseconds;
@@ -311,8 +311,8 @@ namespace AppMover
         private static int CmdClassify(string[] args)
         {
             if (args.Length < 2) { Console.Error.WriteLine("用法: classify <路径>"); return 1; }
-            string path = args[1].TrimEnd('\\');
-            if (!Directory.Exists(path)) { Console.Error.WriteLine("目录不存在: " + path); return 1; }
+            string path = PathUtil.StripExtended(args[1]).TrimEnd('\\');
+            if (!Directory.Exists(PathUtil.IoPath(path))) { Console.Error.WriteLine("目录不存在: " + path); return 1; }
 
             SoftwareIndex idx = SoftwareIndex.Load();
             Classifier cls = new Classifier(idx);

@@ -54,7 +54,7 @@ namespace AppMover.Core
                     string e = entries[i];
                     try
                     {
-                        FileAttributes attr = File.GetAttributes(e);
+                        FileAttributes attr = File.GetAttributes(PathUtil.IoPath(e));
                         if ((attr & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint)
                         {
                             st.ReparsePoints++;
@@ -70,7 +70,7 @@ namespace AppMover.Core
                             st.Files++;
                             try
                             {
-                                FileInfo fi = new FileInfo(e);
+                                FileInfo fi = new FileInfo(PathUtil.IoPath(e));
                                 st.Bytes += fi.Length;
                                 if (!st.MaxWriteKnown || fi.LastWriteTimeUtc > st.MaxWriteUtc)
                                 {
@@ -109,7 +109,7 @@ namespace AppMover.Core
                     string e = entries[i];
                     try
                     {
-                        FileAttributes attr = File.GetAttributes(e);
+                        FileAttributes attr = File.GetAttributes(PathUtil.IoPath(e));
                         if ((attr & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint) continue;
                         if ((attr & FileAttributes.Directory) == FileAttributes.Directory) { stack.Push(e); continue; }
                         if (HardlinkUtil.GetLinkCount(e) > 1)
@@ -121,7 +121,11 @@ namespace AppMover.Core
                     catch { }
                 }
             }
-            return false;
+            // 这里是真 bug 的修复点：曾经写成 return false。
+            // 于是只含 1~2 个硬链接的目录会被判成"没有硬链接"，
+            // 搬移照常进行，跨卷复制打断链接关系 —— 而这个小样本量恰恰是最常见的情况
+            // （3 个以上才提前 return 的设计让 bug 只在少量硬链接时出现）。
+            return samples > 0;
         }
     }
 }

@@ -57,7 +57,7 @@ using System.Reflection;
 [assembly: AssemblyVersion("$($Version).0")]
 [assembly: AssemblyFileVersion("$($Version).0")]
 [assembly: AssemblyProduct("AppMover")]
-[assembly: AssemblyTitle("AppMover - software folder relocator")]
+[assembly: AssemblyTitle("AppMover")]
 [assembly: AssemblyCompany("AppMover contributors")]
 [assembly: AssemblyCopyright("MIT License")]
 "@

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -53,13 +53,13 @@ namespace AppMover.Core
         /// </summary>
         public static void Create(string junctionPath, string targetPath)
         {
-            if (Directory.Exists(junctionPath) || File.Exists(junctionPath))
+            if (Directory.Exists(PathUtil.IoPath(junctionPath)) || File.Exists(junctionPath))
                 throw new IOException("建立联接失败：目标位置已存在同名项 " + junctionPath);
-            if (!Directory.Exists(targetPath))
+            if (!Directory.Exists(PathUtil.IoPath(targetPath)))
                 throw new IOException("建立联接失败：联接指向的目录不存在 " + targetPath);
 
             // 联接必须先有一个空目录作为载体
-            Directory.CreateDirectory(junctionPath);
+            Directory.CreateDirectory(PathUtil.IoPath(junctionPath));
 
             // 替换名必须用 NT 命名空间形式 \??\D:\Foo；显示名用普通形式
             string substitute = @"\??\" + targetPath.TrimEnd('\\');
@@ -167,7 +167,7 @@ namespace AppMover.Core
 
         private static void TryCleanupEmptyDir(string dir)
         {
-            try { if (Directory.Exists(dir)) Directory.Delete(dir, false); }
+            try { if (Directory.Exists(PathUtil.IoPath(dir))) Directory.Delete(PathUtil.IoPath(dir), false); }
             catch { }
         }
 

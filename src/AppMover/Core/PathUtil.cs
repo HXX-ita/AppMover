@@ -41,27 +41,56 @@ namespace AppMover.Core
         {
             if (string.IsNullOrEmpty(fullPath)) return fullPath;
             if (fullPath.StartsWith(@"\\?\", StringComparison.Ordinal)) return fullPath;
-            if (fullPath.StartsWith(@"\\", StringComparison.Ordinal))
-                return @"\\?\UNC\" + fullPath.Substring(2);
-            return @"\\?\" + fullPath;
+            string s = fullPath.Replace('/', '\\');
+            if (s.StartsWith(@"\\", StringComparison.Ordinal))
+                return @"\\?\UNC\" + s.Substring(2);
+            return @"\\?\" + s;
         }
 
-        /// <summary>超过这个长度才需要扩展前缀。</summary>
-        private const int ExtendedThreshold = 240;
+        /// <summary>去掉 \\?\ / \\?\UNC\ 前缀，用于展示给用户或做路径比较。</summary>
+        public static string StripExtended(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return path;
+            if (path.StartsWith(@"\\?\UNC\", StringComparison.Ordinal))
+                return @"\\" + path.Substring(8);
+            if (path.StartsWith(@"\\?\", StringComparison.Ordinal))
+                return path.Substring(4);
+            return path;
+        }
 
         /// <summary>
-        /// 交给文件系统 API 的实际路径。
+        /// 交给文件系统 API 的实际路径 —— **一律加 \\?\ 前缀**。
         ///
-        /// 为什么不无脑加 \\?\：.NET Framework 在默认（legacy path handling）配置下
-        /// **会拒绝** \\?\ 前缀，直接抛异常 —— 实测中它让整棵树的枚举全部失败、
-        /// 大小统计全变 0。所以短路径走普通形式，只有确实可能超长时才加前缀
-        /// （超长场景由随产物发布的 AppMover.exe.config 打开长路径支持来兜底）。
+        /// 这里踩过两次坑，值得写清楚：
+        ///
+        /// 第一次：给所有路径都加前缀，结果整棵树的枚举全部失败、大小统计全变成 0。
+        ///   原因不是前缀本身有问题，而是**没有配套的 app.config**：
+        ///   .NET Framework 默认的 legacy path handling 会直接拒绝 \\?\ 前缀。
+        ///   当时的"修法"是短路径不加、长路径才加，这是个错误的折中。
+        ///
+        /// 第二次：实测发现那个折中根本不够 —— 即使 app.config 里
+        ///   Switch.System.IO.UseLegacyPathHandling=false 已生效，
+        ///   无前缀路径仍然**恰好在 260 字符处开始失败**（DirectoryNotFoundException）。
+        ///   而加前缀访问长短路径都成功，包括 Exists / GetAttributes / FileInfo / Delete / FileStream。
+        ///
+        /// 所以结论是：配置只解决了"前缀被拒绝"，并不能让无前缀长路径工作。
+        /// 正确做法就是统一加前缀（配置已在 build.ps1 里随产物生成）。
         /// </summary>
         public static string IoPath(string fullPath)
         {
             if (string.IsNullOrEmpty(fullPath)) return fullPath;
-            if (fullPath.Length < ExtendedThreshold) return fullPath;
-            return ToExtended(fullPath);
+            if (fullPath.StartsWith(@"\\?\", StringComparison.Ordinal)) return fullPath;
+
+            string s = fullPath.IndexOf('/') >= 0 ? fullPath.Replace('/', '\\') : fullPath;
+
+            // \\?\ 只接受完全限定的路径，相对路径要先转绝对
+            bool rooted = (s.Length >= 2 && s[1] == ':') || s.StartsWith(@"\\", StringComparison.Ordinal);
+            if (!rooted)
+            {
+                try { s = Path.GetFullPath(s); }
+                catch { return fullPath; }
+            }
+            return ToExtended(s);
         }
 
         // ---------------- 真实路径解析 ----------------
@@ -97,7 +126,7 @@ namespace AppMover.Core
             IntPtr h = IntPtr.Zero;
             try
             {
-                h = CreateFileW(path, FILE_READ_ATTRIBUTES,
+                h = CreateFileW(IoPath(path), FILE_READ_ATTRIBUTES,
                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                     IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero);
                 if (h == new IntPtr(-1)) return null;
@@ -134,7 +163,7 @@ namespace AppMover.Core
         {
             try
             {
-                FileAttributes a = File.GetAttributes(path);
+                FileAttributes a = File.GetAttributes(IoPath(path));
                 return (a & FileAttributes.Directory) == FileAttributes.Directory;
             }
             catch { return false; }
@@ -145,7 +174,7 @@ namespace AppMover.Core
         {
             try
             {
-                FileAttributes a = File.GetAttributes(path);
+                FileAttributes a = File.GetAttributes(IoPath(path));
                 return (a & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint;
             }
             catch { return false; }

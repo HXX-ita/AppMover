@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -52,12 +52,12 @@ namespace AppMover.Core
                 string e = entries[i];
                 try
                 {
-                    FileAttributes ea = File.GetAttributes(e);
+                    FileAttributes ea = File.GetAttributes(PathUtil.IoPath(e));
                     if ((ea & FileAttributes.Directory) == FileAttributes.Directory)
                     {
                         if ((ea & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint)
                         {
-                            if (!RemoveDirectoryW(e) && Directory.Exists(e))
+                            if (!RemoveDirectoryW(PathUtil.IoPath(e)) && Directory.Exists(e))
                                 { failures.Add(e + " : 无法删除联接"); ok = false; }
                         }
                         else
@@ -69,10 +69,10 @@ namespace AppMover.Core
                     {
                         try
                         {
-                            File.SetAttributes(e, FileAttributes.Normal);
+                            File.SetAttributes(PathUtil.IoPath(e), FileAttributes.Normal);
                         }
                         catch { }
-                        File.Delete(e);
+                        File.Delete(PathUtil.IoPath(e));
                     }
                 }
                 catch (Exception ex)

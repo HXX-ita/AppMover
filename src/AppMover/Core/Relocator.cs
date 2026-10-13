@@ -89,15 +89,17 @@ namespace AppMover.Core
             bool force, bool allowSameVolume)
         {
             MovePlan plan = new MovePlan();
-            plan.Source = source.TrimEnd('\\');
-            plan.TargetRoot = targetRoot.TrimEnd('\\');
+            // 入口统一剥掉 \\?\ 前缀：调用方可能从枚举结果里直接拿来路径，
+            // 而计划里的路径会进入界面、日志与字符串比较，带前缀会污染这些地方。
+            plan.Source = PathUtil.StripExtended(source).TrimEnd('\\');
+            plan.TargetRoot = PathUtil.StripExtended(targetRoot).TrimEnd('\\');
 
-            if (!Directory.Exists(plan.Source))
+            if (!Directory.Exists(PathUtil.IoPath(plan.Source)))
             {
                 plan.Blockers.Add("源目录不存在");
                 return plan;
             }
-            if (!Directory.Exists(plan.TargetRoot))
+            if (!Directory.Exists(PathUtil.IoPath(plan.TargetRoot)))
             {
                 plan.Blockers.Add("目标盘目录不存在: " + plan.TargetRoot);
                 return plan;
@@ -162,10 +164,10 @@ namespace AppMover.Core
             }
 
             // 目标位置冲突
-            if (Directory.Exists(plan.Target) || File.Exists(plan.Target))
+            if (Directory.Exists(PathUtil.IoPath(plan.Target)) || File.Exists(plan.Target))
             {
                 int n = 0;
-                try { n = Directory.GetFileSystemEntries(plan.Target).Length; } catch { }
+                try { n = Directory.GetFileSystemEntries(PathUtil.IoPath(plan.Target)).Length; } catch { }
                 if (n > 0) plan.Blockers.Add("目标位置已存在且非空：" + plan.Target);
                 else plan.Warnings.Add("目标位置已存在空目录，将被使用：" + plan.Target);
             }
@@ -262,7 +264,7 @@ namespace AppMover.Core
                 // 3) 源目录改名让位（可回滚窗口从这里开始）
                 stage = "rename";
                 log("3/6 源目录改名为 " + Path.GetFileName(oldPath) + "（换出回滚窗口）");
-                Directory.Move(plan.Source, oldPath);
+                Directory.Move(PathUtil.IoPath(plan.Source), PathUtil.IoPath(oldPath));
                 sourceRenamed = true;
 
                 // 4) 建立联接
@@ -312,7 +314,7 @@ namespace AppMover.Core
                 // 回滚：拆掉可能已建立的联接，把旧目录改名回来
                 try
                 {
-                    if (junctionCreated && Directory.Exists(plan.Source) && PathUtil.IsReparsePoint(plan.Source))
+                    if (junctionCreated && Directory.Exists(PathUtil.IoPath(plan.Source)) && PathUtil.IsReparsePoint(plan.Source))
                     {
                         Junction.Delete(plan.Source);
                         log("  已拆除联接");
@@ -322,9 +324,9 @@ namespace AppMover.Core
 
                 try
                 {
-                    if (sourceRenamed && Directory.Exists(oldPath) && !Directory.Exists(plan.Source))
+                    if (sourceRenamed && Directory.Exists(PathUtil.IoPath(oldPath)) && !Directory.Exists(PathUtil.IoPath(plan.Source)))
                     {
-                        Directory.Move(oldPath, plan.Source);
+                        Directory.Move(PathUtil.IoPath(oldPath), PathUtil.IoPath(plan.Source));
                         log("  已把原目录改名还原");
                     }
                 }
@@ -370,8 +372,8 @@ namespace AppMover.Core
                 r.Status = "blocked"; r.Message = "只有状态为 completed 的记录可以撤销（当前 " + e.Status + "）";
                 return r;
             }
-            if (!Directory.Exists(e.Target)) { r.Status = "blocked"; r.Message = "目标目录不存在: " + e.Target; return r; }
-            if (!Directory.Exists(e.Original)) { r.Status = "blocked"; r.Message = "原位置不存在: " + e.Original; return r; }
+            if (!Directory.Exists(PathUtil.IoPath(e.Target))) { r.Status = "blocked"; r.Message = "目标目录不存在: " + e.Target; return r; }
+            if (!Directory.Exists(PathUtil.IoPath(e.Original))) { r.Status = "blocked"; r.Message = "原位置不存在: " + e.Original; return r; }
             if (!PathUtil.IsReparsePoint(e.Original))
             {
                 r.Status = "blocked";
@@ -424,14 +426,14 @@ namespace AppMover.Core
                 // 尽力恢复「撤销前」的可用状态：把联接重新建起来
                 try
                 {
-                    if (junctionRemoved && !PathUtil.IsReparsePoint(e.Original) && Directory.Exists(e.Target))
+                    if (junctionRemoved && !PathUtil.IsReparsePoint(e.Original) && Directory.Exists(PathUtil.IoPath(e.Target)))
                     {
-                        if (copiedBack && Directory.Exists(e.Original))
+                        if (copiedBack && Directory.Exists(PathUtil.IoPath(e.Original)))
                         {
                             // 原位置已经有复制回来的一份，先移开再重建联接，避免数据混淆
                             string stash = e.Original + ".appmover-undo-" + e.Id;
                             log("  原位置已有部分复制的数据，移到 " + stash + " 以免混淆");
-                            if (!Directory.Exists(stash)) Directory.Move(e.Original, stash);
+                            if (!Directory.Exists(PathUtil.IoPath(stash))) Directory.Move(PathUtil.IoPath(e.Original), PathUtil.IoPath(stash));
                         }
                         Junction.Create(e.Original, e.Target);
                         log("  已重建联接，程序仍可用（指向 " + e.Target + "）");
@@ -449,7 +451,7 @@ namespace AppMover.Core
         {
             try
             {
-                if (Directory.Exists(target))
+                if (Directory.Exists(PathUtil.IoPath(target)))
                 {
                     List<string> f = new List<string>();
                     SafeDelete.DeleteTree(target, f);
@@ -480,7 +482,8 @@ namespace AppMover.Core
                             FileAttributes a = File.GetAttributes(entries[i]);
                             if ((a & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint) continue;
                             if ((a & FileAttributes.Directory) == FileAttributes.Directory) stack.Push(entries[i]);
-                            else { canary = entries[i]; break; }
+                            // 剥前缀：下面要用它按目标路径长度截出相对路径，前缀会让长度对不上
+                            else { canary = PathUtil.StripExtended(entries[i]); break; }
                         }
                         catch { }
                     }

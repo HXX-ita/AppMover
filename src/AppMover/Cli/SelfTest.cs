@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using AppMover.Core;
 
 namespace AppMover
@@ -33,6 +35,10 @@ namespace AppMover
             TestEmptyFolderIsJunk();
             TestCloudSync();
             TestJunctionRoundTrip();
+            TestOccupancyDetection();
+            TestHardlinkDetection();
+            TestLongPathHandling();
+            TestGuardBlockers();
             TestFullRelocateAndUndo();
             TestRealMachinePaths();
 
@@ -367,6 +373,217 @@ namespace AppMover
         {
             try { return Directory.GetDirectories(dir).Length; }
             catch { return -1; }
+        }
+
+        /// <summary>
+        /// 占用检测（Restart Manager）。
+        ///
+        /// 为什么必须测：这套 P/Invoke 接线如果写错，它不会报错，只会**永远返回"没有占用"**。
+        /// 后果是用户拿不到"请先关闭某某程序"的提示，而是卡在后面改名/删除步骤上失败，
+        /// 错误信息还不指向真正原因。静默失效的安全机制等于没有。
+        /// </summary>
+        private static void TestOccupancyDetection()
+        {
+            Group("占用检测（Restart Manager）");
+            string dir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_selftest_occ");
+            try
+            {
+                if (Directory.Exists(dir)) { List<string> junk = new List<string>(); SafeDelete.DeleteTree(dir, junk); }
+                Directory.CreateDirectory(dir);
+                string file = Path.Combine(dir, "locked.bin");
+                File.WriteAllText(file, "locked content");
+
+                OccupancyReport idle = Occupancy.Check(dir, 100);
+                Check(!idle.HasOccupancy, "未锁定时不误报占用（扫描了 " + idle.FilesScanned + " 个文件）");
+
+                using (FileStream fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.None))
+                {
+                    OccupancyReport busy = Occupancy.Check(dir, 100);
+                    Check(busy.HasOccupancy, "独占锁定后能报告出占用");
+                    if (busy.HasOccupancy)
+                    {
+                        string list = string.Join(" | ", busy.Processes.ToArray());
+                        // 断言用 PID 而不是进程名：Restart Manager 返回的 strAppName 来自
+                        // 程序版本资源里的描述（AssemblyTitle），不是进程名，拿进程名去比会误判。
+                        // 真正要验证的是「它认出了持有文件的那个进程」，PID 才是精确的判据。
+                        int myPid = Process.GetCurrentProcess().Id;
+                        bool foundSelf = list.IndexOf("[PID " + myPid + "]", StringComparison.Ordinal) >= 0;
+                        Check(foundSelf, "占用列表包含当前进程 PID " + myPid + "（实际：" + list + "）");
+                    }
+                    else
+                    {
+                        _fail++;
+                        Console.WriteLine("  FAIL 占用未被检出（Restart Manager 接线可能失效）");
+                    }
+                }
+
+                OccupancyReport after = Occupancy.Check(dir, 100);
+                Check(!after.HasOccupancy, "释放锁后不再报告占用");
+            }
+            catch (Exception ex)
+            {
+                _fail++;
+                Console.WriteLine("  FAIL 占用检测测试异常: " + ex.GetType().Name + ": " + ex.Message);
+            }
+            finally
+            {
+                try { List<string> j = new List<string>(); SafeDelete.DeleteTree(dir, j); } catch { }
+            }
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool CreateHardLinkW(string newLink, string existing, IntPtr security);
+
+        /// <summary>硬链接检测。硬链接不能跨卷，复制会打断链接关系，因此含硬链接的目录必须禁止搬移。</summary>
+        private static void TestHardlinkDetection()
+        {
+            Group("硬链接检测");
+            string dir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_selftest_hardlink");
+            string dst = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_selftest_hardlink_dst");
+            try
+            {
+                if (Directory.Exists(dir)) { List<string> j = new List<string>(); SafeDelete.DeleteTree(dir, j); }
+                if (Directory.Exists(dst)) { List<string> j = new List<string>(); SafeDelete.DeleteTree(dst, j); }
+                Directory.CreateDirectory(dir);
+                Directory.CreateDirectory(dst);
+
+                string original = Path.Combine(dir, "original.bin");
+                string linked = Path.Combine(dir, "linked.bin");
+                File.WriteAllText(original, "hardlink target content");
+
+                bool created = CreateHardLinkW(linked, original, IntPtr.Zero);
+                Check(created, "测试前提：成功创建硬链接");
+                if (!created)
+                {
+                    Console.WriteLine("  （当前文件系统不支持硬链接，跳过后续断言）");
+                    return;
+                }
+
+                uint n = HardlinkUtil.GetLinkCount(original);
+                Check(n == 2, "GetLinkCount 识别链接数为 2（实际 " + n + "）");
+
+                int samples;
+                Check(TreeWalker.ContainsHardlinks(dir, out samples), "ContainsHardlinks 检出目录内含硬链接（样本 " + samples + "）");
+
+                Classifier cls = new Classifier(new SoftwareIndex());
+                MovePlan plan = Relocator.BuildPlan(dir, dst, cls, null, false, true);
+                bool blocked = false;
+                for (int i = 0; i < plan.Blockers.Count; i++)
+                    if (plan.Blockers[i].IndexOf("硬链接", StringComparison.Ordinal) >= 0) blocked = true;
+                Check(blocked, "规划因含硬链接而阻止搬移");
+                if (!blocked) Console.WriteLine("         阻止项: " + string.Join("；", plan.Blockers.ToArray()));
+            }
+            catch (Exception ex)
+            {
+                _fail++;
+                Console.WriteLine("  FAIL 硬链接测试异常: " + ex.GetType().Name + ": " + ex.Message);
+            }
+            finally
+            {
+                try { List<string> j = new List<string>(); SafeDelete.DeleteTree(dir, j); } catch { }
+                try { List<string> j = new List<string>(); SafeDelete.DeleteTree(dst, j); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// 长路径（超过 260 字符）。
+        /// 这里踩过坑：早期给所有路径都加 \\?\ 前缀，结果 .NET Framework 默认配置直接拒绝该前缀，
+        /// 整棵树的统计全变成 0。修法是短路径不加、长路径才加，并随产物附带 app.config 打开长路径支持。
+        /// </summary>
+        private static void TestLongPathHandling()
+        {
+            Group("长路径（超过 260 字符）");
+            string root = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_selftest_longpath");
+            try
+            {
+                if (Directory.Exists(root)) { List<string> j = new List<string>(); SafeDelete.DeleteTree(root, j); }
+
+                string deep = root;
+                for (int i = 0; i < 12; i++) deep = Path.Combine(deep, "level_" + i + "_padding_padding_padding");
+                Check(deep.Length > 260, "构造出的路径确实超过 260 字符（实际 " + deep.Length + "）");
+
+                Directory.CreateDirectory(PathUtil.IoPath(deep));
+                File.WriteAllText(PathUtil.IoPath(Path.Combine(deep, "deep.txt")), "deep content");
+                Check(true, "能在超长路径下创建目录与文件");
+
+                TreeStats st = TreeWalker.Measure(root);
+                Check(st.Files >= 1, "TreeWalker 统计到超长路径下的文件（实际 " + st.Files + " 个）");
+                Check(st.IsComplete, "超长路径遍历没有出现权限/路径失败（跳过 " + st.Denied + " 项）");
+
+                List<string> fails = new List<string>();
+                bool deleted = SafeDelete.DeleteTree(root, fails);
+                Check(deleted, "超长路径树能被安全删除"
+                    + (fails.Count > 0 ? "（失败 " + fails.Count + " 项，例如 " + fails[0] + "）" : ""));
+            }
+            catch (Exception ex)
+            {
+                _fail++;
+                Console.WriteLine("  FAIL 长路径测试异常: " + ex.GetType().Name + ": " + ex.Message);
+            }
+            finally
+            {
+                try { List<string> j = new List<string>(); SafeDelete.DeleteTree(root, j); } catch { }
+            }
+        }
+
+        /// <summary>预检守卫：这些条件必须真的拦得住，不能只是"文档里写了"。</summary>
+        private static void TestGuardBlockers()
+        {
+            Group("预检阻止项");
+            string baseDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_selftest_guard");
+            try
+            {
+                if (Directory.Exists(baseDir)) { List<string> j = new List<string>(); SafeDelete.DeleteTree(baseDir, j); }
+                string src = Path.Combine(baseDir, "App");
+                string dst = Path.Combine(baseDir, "dst");
+                Directory.CreateDirectory(src);
+                Directory.CreateDirectory(dst);
+                File.WriteAllText(Path.Combine(src, "a.txt"), "a");
+
+                Classifier cls = new Classifier(new SoftwareIndex());
+
+                // (a) 源本身就是联接
+                string linkSrc = Path.Combine(baseDir, "LinkApp");
+                Junction.Create(linkSrc, src);
+                MovePlan p1 = Relocator.BuildPlan(linkSrc, dst, cls, null, false, true);
+                Check(HasBlocker(p1, "联接"), "源本身是联接时被阻止");
+                Junction.Delete(linkSrc);
+
+                // (b) 目标位置已存在且非空
+                string conflict = Path.Combine(dst, "App");
+                Directory.CreateDirectory(conflict);
+                File.WriteAllText(Path.Combine(conflict, "occupied.txt"), "x");
+                MovePlan p2 = Relocator.BuildPlan(src, dst, cls, null, false, true);
+                Check(HasBlocker(p2, "已存在且非空"), "目标位置已被非空目录占用时被阻止");
+
+                // (c) 同卷搬移（未加开关）—— 没有意义，应当阻止
+                MovePlan p3 = Relocator.BuildPlan(src, dst, cls, null, false, false);
+                Check(HasBlocker(p3, "同一个卷"), "同卷搬移（未加开关）被阻止");
+
+                // (d) 目标盘不存在
+                MovePlan p4 = Relocator.BuildPlan(src, @"Z:\不存在的盘\子目录", cls, null, false, true);
+                Check(p4.Blockers.Count > 0, "目标盘不存在时被阻止");
+
+                // (e) 源目录不存在
+                MovePlan p5 = Relocator.BuildPlan(Path.Combine(baseDir, "NoSuchApp"), dst, cls, null, false, true);
+                Check(HasBlocker(p5, "不存在"), "源目录不存在时被阻止");
+            }
+            catch (Exception ex)
+            {
+                _fail++;
+                Console.WriteLine("  FAIL 阻止项测试异常: " + ex.GetType().Name + ": " + ex.Message);
+            }
+            finally
+            {
+                try { List<string> j = new List<string>(); SafeDelete.DeleteTree(baseDir, j); } catch { }
+            }
+        }
+
+        private static bool HasBlocker(MovePlan p, string keyword)
+        {
+            for (int i = 0; i < p.Blockers.Count; i++)
+                if (p.Blockers[i].IndexOf(keyword, StringComparison.Ordinal) >= 0) return true;
+            return false;
         }
 
         private static void TestRealMachinePaths()
