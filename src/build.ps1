@@ -88,8 +88,13 @@ function Build-Target {
     $cscArgs += $Sources
 
     Write-Host ("编译 {0} ({1}，{2} 个源文件) ..." -f $Name, $TargetKind, $Sources.Count)
-    & $csc @cscArgs
-    if ($LASTEXITCODE -ne 0) { throw "编译 $Name 失败，退出码 $LASTEXITCODE" }
+    # 必须把编译器输出收进变量：直接 & $csc 的话，任何 stdout（例如一条警告）
+    # 都会被 PowerShell 当成函数返回值混进来，调用方拿到的就不是单个路径而是一个数组，
+    # 后续拼接 "$exe.config" 会得到非法路径（曾因此报 "path's format is not supported"）。
+    $cscOutput = & $csc @cscArgs 2>&1
+    $cscCode = $LASTEXITCODE
+    if ($cscOutput) { $cscOutput | ForEach-Object { Write-Host "  $_" } }
+    if ($cscCode -ne 0) { throw "编译 $Name 失败，退出码 $cscCode" }
 
     $fi = Get-Item $exe
     Write-Host ("  -> {0}  ({1:N1} KB)" -f $fi.Name, ($fi.Length / 1KB))

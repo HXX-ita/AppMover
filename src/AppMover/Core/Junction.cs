@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -58,8 +58,24 @@ namespace AppMover.Core
             if (!Directory.Exists(PathUtil.IoPath(targetPath)))
                 throw new IOException("建立联接失败：联接指向的目录不存在 " + targetPath);
 
-            // 联接必须先有一个空目录作为载体
-            Directory.CreateDirectory(PathUtil.IoPath(junctionPath));
+            // 联接必须先有一个空目录作为载体。
+            // 这里最容易出权限问题：Program Files / ProgramData 下需要有管理员权限。
+            // 直接让 Directory.CreateDirectory 抛原始异常的话，用户只会看到系统那句
+            // 「对路径的访问被拒绝」，不知道该怎么办 —— 所以换成可操作的提示。
+            try
+            {
+                Directory.CreateDirectory(PathUtil.IoPath(junctionPath));
+            }
+            catch (UnauthorizedAccessException)
+            {
+                throw new IOException("建立联接失败：没有权限在 "
+                    + Path.GetDirectoryName(junctionPath)
+                    + " 下创建项。该位置需要管理员权限，请以管理员身份重新运行本程序。");
+            }
+            catch (Exception ex)
+            {
+                throw new IOException("建立联接失败：无法在原位置创建载体目录（" + ex.Message + "）");
+            }
 
             // 替换名必须用 NT 命名空间形式 \??\D:\Foo；显示名用普通形式
             string substitute = @"\??\" + targetPath.TrimEnd('\\');

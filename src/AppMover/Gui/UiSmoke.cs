@@ -39,6 +39,9 @@ namespace AppMover.Gui
             try { TestConfirmDialog(); }
             catch (Exception ex) { Fail("ConfirmDialog 测试抛异常: " + ex.GetType().Name + ": " + ex.Message); }
 
+            try { TestRecoverySurface(); }
+            catch (Exception ex) { Fail("恢复入口测试抛异常: " + ex.GetType().Name + ": " + ex.Message); }
+
             _sb.AppendLine();
             _sb.AppendLine(new string('=', 60));
             _sb.AppendLine(string.Format("通过 {0}   失败 {1}", _pass, _fail));
@@ -153,6 +156,77 @@ namespace AppMover.Gui
             Ok("干跑场景构造并显示成功");
             CheckButtonsInside(d3, "干跑场景");
             d3.Close(); d3.Dispose();
+        }
+
+        /// <summary>
+        /// 界面的启动恢复流程。
+        ///
+        /// 为什么必须测：崩溃恢复只在命令行里验证过，而**普通用户永远不会去用命令行**。
+        /// 界面在 Shown 时会自动检查并处理无歧义的中断现场，这条链路之前完全没被覆盖过。
+        /// 这里构造一个真实的「源完好、目标有半截副本」现场，然后真的显示窗口，
+        /// 看它是否自己把现场收拾干净且不抛异常。
+        /// </summary>
+        private static void TestRecoverySurface()
+        {
+            Section("未完成搬移的界面入口");
+            string baseDir = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_selftest_ui_recover");
+            string journalPath = System.IO.Path.Combine(baseDir, "journal.jsonl");
+            string oldJournal = Environment.GetEnvironmentVariable("APPMOVER_JOURNAL");
+            try
+            {
+                if (System.IO.Directory.Exists(baseDir))
+                {
+                    System.Collections.Generic.List<string> j = new System.Collections.Generic.List<string>();
+                    SafeDelete.DeleteTree(baseDir, j);
+                }
+                System.IO.Directory.CreateDirectory(baseDir);
+                Environment.SetEnvironmentVariable("APPMOVER_JOURNAL", journalPath);
+
+                string src = System.IO.Path.Combine(baseDir, "App");
+                string tgt = System.IO.Path.Combine(baseDir, "dst", "App");
+                System.IO.Directory.CreateDirectory(src);
+                System.IO.Directory.CreateDirectory(tgt);
+                System.IO.File.WriteAllText(System.IO.Path.Combine(src, "a.txt"), "a");
+                System.IO.File.WriteAllText(System.IO.Path.Combine(tgt, "half.txt"), "half");
+
+                JournalEntry e = new JournalEntry();
+                e.Id = "uitest-0001";
+                e.Time = DateTime.Now.ToString("o");
+                e.Original = src;
+                e.Target = tgt;
+                e.Status = "planned";
+                e.Method = "test";
+                Journal.Append(e);
+
+                Check(Relocator.FindInterrupted().Count == 1, "构造出 1 项被中断的搬移（测试前提）");
+
+                MainForm f = new MainForm();
+                f.Show();                 // Shown 事件里会自动检查并处理
+                Application.DoEvents();
+
+                Ok("带未完成搬移的窗口能正常显示");
+                Check(Relocator.FindInterrupted().Count == 0, "界面在启动时自动处理了无歧义的中断现场");
+                Check(!System.IO.Directory.Exists(tgt), "目标盘的半截副本已被清理");
+                Check(System.IO.Directory.Exists(src), "源目录保持完好");
+                Check(System.IO.File.Exists(System.IO.Path.Combine(src, "a.txt")), "源文件未被破坏");
+
+                f.Close();
+                f.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Fail("恢复入口测试异常: " + ex.GetType().Name + ": " + ex.Message);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("APPMOVER_JOURNAL", oldJournal);
+                try
+                {
+                    System.Collections.Generic.List<string> j = new System.Collections.Generic.List<string>();
+                    SafeDelete.DeleteTree(baseDir, j);
+                }
+                catch { }
+            }
         }
 
         private static void CheckButtonsInside(Form f, string tag)

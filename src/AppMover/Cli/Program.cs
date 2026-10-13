@@ -64,7 +64,10 @@ namespace AppMover
             Console.WriteLine("                       选项: [--path <路径>] [--error \"信息\"] [--unknown] [--open]");
             Console.WriteLine("  selftest             内置回归自测");
             Console.WriteLine();
-            Console.WriteLine("  plan/move 选项: [--to D:\\] [--force] [--dry-run]");
+            Console.WriteLine("  plan/move 选项: [--to D:\\] [--dry-run] [--allow-same-volume]");
+            Console.WriteLine("                  --force  忽略「程序正在占用该目录」这条阻止，继续尝试。");
+            Console.WriteLine("                           注意：被占用的文件仍会复制失败，程序不会做出");
+            Console.WriteLine("                           不完整的搬移 —— 它会清理副本并报告失败。");
         }
 
         // ---------------- 搬移规划与执行 ----------------

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -41,6 +41,7 @@ namespace AppMover
             TestGuardBlockers();
             TestSpaceRule();
             TestCrashRecovery();
+            TestElevationRequired();
             TestFullRelocateAndUndo();
             TestRealMachinePaths();
 
@@ -734,6 +735,91 @@ namespace AppMover
                 p.WaitForExit();
                 output = so + se;
                 return p.ExitCode;
+            }
+        }
+
+        /// <summary>
+        /// 需要管理员权限但没提权时的行为。
+        ///
+        /// 这条路径之前只有逻辑、没有实测。有两个必须验证的点：
+        ///   1. 预检要能提前拦住（而不是让用户走到一半才失败）
+        ///   2. 万一真去建联接，失败信息必须**可操作**（告诉用户该以管理员身份运行），
+        ///      而且要收拾干净，不能把空的载体目录留在 Program Files 里
+        /// </summary>
+        private static void TestElevationRequired()
+        {
+            Group("需要管理员权限时（当前未提权）");
+            if (Security.IsElevated())
+            {
+                Console.WriteLine("  skip 当前进程已提权，无法验证「权限不足」的路径");
+                return;
+            }
+            Check(!Security.IsElevated(), "测试前提：当前进程未提权");
+            Check(Security.NeedsElevation(@"C:\Program Files\Foo"), @"Program Files 下判定为需要提权");
+            Check(Security.NeedsElevation(@"C:\Program Files (x86)\Foo"), @"Program Files (x86) 下判定为需要提权");
+            Check(Security.NeedsElevation(@"C:\ProgramData\Foo"), @"ProgramData 下判定为需要提权");
+            Check(Security.NeedsElevation(@"C:\Windows\Foo"), @"Windows 下判定为需要提权");
+            Check(!Security.NeedsElevation(@"D:\Foo"), "普通数据盘目录不需要提权");
+            Check(!Security.NeedsElevation(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)),
+                "用户目录不需要提权");
+
+            string target = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_selftest_elev_target");
+            string testDir = @"C:\Program Files\_appmover_junction_probe";
+            try
+            {
+                Directory.CreateDirectory(PathUtil.IoPath(target));
+                if (Directory.Exists(PathUtil.IoPath(testDir)))
+                {
+                    Console.WriteLine("  skip 探针目录已存在（疑似上次残留）：" + testDir);
+                    return;
+                }
+
+                // 预检：用一个真实存在的 Program Files 子目录，验证会被提权要求拦住
+                string[] subs = Directory.GetDirectories(PathUtil.IoPath(@"C:\Program Files"));
+                string realSub = subs.Length > 0 ? PathUtil.StripExtended(subs[0]) : null;
+                if (realSub != null)
+                {
+                    Classifier cls = new Classifier(new SoftwareIndex());
+                    MovePlan plan = Relocator.BuildPlan(realSub, target, cls, null, true, true);
+                    bool adminBlocked = false;
+                    for (int i = 0; i < plan.Blockers.Count; i++)
+                        if (plan.Blockers[i].IndexOf("管理员", StringComparison.Ordinal) >= 0) adminBlocked = true;
+                    Check(adminBlocked, "预检提前拦住需要提权的搬移（" + Path.GetFileName(realSub) + "）");
+                }
+
+                // 真去建联接：必须失败，且信息可操作、现场干净
+                bool threw = false; string msg = "";
+                try { Junction.Create(testDir, target); }
+                catch (Exception ex) { threw = true; msg = ex.Message; }
+
+                if (threw)
+                {
+                    Check(true, "在 Program Files 下建立联接会失败，而不是静默成功");
+                    Check(msg.IndexOf("管理员", StringComparison.Ordinal) >= 0, "失败信息提示了需要管理员权限");
+                    Console.WriteLine("         实际信息: " + msg);
+                    Check(!Directory.Exists(PathUtil.IoPath(testDir)), "失败后没有把空载体目录留在 Program Files 里");
+                }
+                else
+                {
+                    _fail++;
+                    Console.WriteLine("  FAIL 竟然成功在 Program Files 下建立了联接，请检查权限策略");
+                    try { Junction.Delete(testDir); } catch { }
+                }
+            }
+            catch (Exception ex)
+            {
+                _fail++;
+                Console.WriteLine("  FAIL 提权路径测试异常: " + ex.GetType().Name + ": " + ex.Message);
+            }
+            finally
+            {
+                try { List<string> j = new List<string>(); SafeDelete.DeleteTree(target, j); } catch { }
+                try
+                {
+                    if (Directory.Exists(PathUtil.IoPath(testDir)) && !PathUtil.IsReparsePoint(testDir))
+                        Directory.Delete(PathUtil.IoPath(testDir), false);
+                }
+                catch { }
             }
         }
 
