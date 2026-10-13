@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -43,6 +43,7 @@ namespace AppMover
             TestCrashRecovery();
             TestElevationRequired();
             TestDriveRootTarget();
+            TestUndoRefusals();
             TestFullRelocateAndUndo();
             TestRealMachinePaths();
 
@@ -875,6 +876,100 @@ namespace AppMover
             {
                 try { List<string> j = new List<string>(); SafeDelete.DeleteTree(baseDir, j); } catch { }
             }
+        }
+
+        /// <summary>
+        /// 撤销的拒绝路径。
+        ///
+        /// Undo 的第一件事是核对现场与日志是否相符，不符就**拒绝**而不是猜。
+        /// 这几条守卫如果坏了，撤销就会在用户已经改动过现场的情况下乱动数据 ——
+        /// 属于「坏了会毁数据」的那一类，却一直没被测过。
+        /// 每条都断言两件事：必须拒绝，且**拒绝后磁盘上什么都没变**。
+        /// </summary>
+        private static void TestUndoRefusals()
+        {
+            Group("撤销的拒绝路径（宁可拒绝，不可猜）");
+            string baseDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_selftest_undoguard");
+            string journalPath = Path.Combine(baseDir, "journal.jsonl");
+            string oldJournal = Environment.GetEnvironmentVariable("APPMOVER_JOURNAL");
+            try
+            {
+                if (Directory.Exists(baseDir)) { List<string> j = new List<string>(); SafeDelete.DeleteTree(baseDir, j); }
+                Directory.CreateDirectory(baseDir);
+                Environment.SetEnvironmentVariable("APPMOVER_JOURNAL", journalPath);
+
+                string realDir = Path.Combine(baseDir, "RealApp");       // 普通目录
+                string targetDir = Path.Combine(baseDir, "Target");      // 真目标
+                string linkDir = Path.Combine(baseDir, "LinkApp");       // 指向 targetDir 的联接
+                string otherDir = Path.Combine(baseDir, "Other");        // 另一个目录（用于「指向别处」）
+                Directory.CreateDirectory(realDir);
+                Directory.CreateDirectory(targetDir);
+                Directory.CreateDirectory(otherDir);
+                File.WriteAllText(Path.Combine(realDir, "keep.txt"), "keep");
+                File.WriteAllText(Path.Combine(targetDir, "t.txt"), "t");
+                File.WriteAllText(Path.Combine(otherDir, "o.txt"), "o");
+                Junction.Create(linkDir, targetDir);
+
+                // 场景一：状态不是 completed（还没搬完的记录不该被撤销）
+                JournalEntry e1 = MakeEntry("guard-1", realDir, targetDir, "planned");
+                MoveResult r1 = Relocator.Undo(e1, null);
+                Check(!r1.Success && r1.Status == "blocked", "状态非 completed 时拒绝撤销（" + r1.Status + "）");
+                Check(Directory.Exists(realDir) && File.Exists(Path.Combine(realDir, "keep.txt")),
+                    "拒绝后源目录与文件未被改动");
+
+                // 场景二：目标目录不存在（数据不在记录所说的位置）
+                JournalEntry e2 = MakeEntry("guard-2", linkDir, Path.Combine(baseDir, "NoSuchTarget"), "completed");
+                MoveResult r2 = Relocator.Undo(e2, null);
+                Check(!r2.Success && r2.Status == "blocked", "目标目录不存在时拒绝撤销（" + r2.Status + "）");
+                Check(PathUtil.IsReparsePoint(linkDir), "拒绝后联接仍在，没有被拆掉");
+
+                // 场景三：原位置已经不是联接（可能被人为改动过）
+                JournalEntry e3 = MakeEntry("guard-3", realDir, targetDir, "completed");
+                MoveResult r3 = Relocator.Undo(e3, null);
+                Check(!r3.Success && r3.Status == "blocked", "原位置不是联接时拒绝撤销（" + r3.Status + "）");
+                Check(Directory.Exists(realDir) && !PathUtil.IsReparsePoint(realDir), "拒绝后原目录保持原样");
+                Check(File.Exists(Path.Combine(realDir, "keep.txt")), "拒绝后原目录里的文件完好");
+
+                // 场景四：联接指向别处（与日志记录不符）
+                JournalEntry e4 = MakeEntry("guard-4", linkDir, otherDir, "completed");
+                MoveResult r4 = Relocator.Undo(e4, null);
+                Check(!r4.Success && r4.Status == "blocked", "联接指向与记录不符时拒绝撤销（" + r4.Status + "）");
+                Check(PathUtil.IsReparsePoint(linkDir), "拒绝后联接仍指向原处");
+                string real = PathUtil.TryGetRealPath(linkDir);
+                Check(real != null && PathUtil.Normalize(real) == PathUtil.Normalize(targetDir),
+                    "联接目标未被改动（仍为 " + targetDir + "）");
+                Check(File.Exists(Path.Combine(otherDir, "o.txt")), "无关目录未被波及");
+
+                // 每条拒绝信息都应说明原因，而不是空话
+                Console.WriteLine("         场景一信息: " + r1.Message);
+                Console.WriteLine("         场景四信息: " + r4.Message);
+                Check(r1.Message.IndexOf("completed", StringComparison.OrdinalIgnoreCase) >= 0,
+                    "场景一的拒绝信息说明了原因");
+                Check(r4.Message.IndexOf("不符", StringComparison.Ordinal) >= 0,
+                    "场景四的拒绝信息说明了原因");
+            }
+            catch (Exception ex)
+            {
+                _fail++;
+                Console.WriteLine("  FAIL 撤销拒绝路径测试异常: " + ex.GetType().Name + ": " + ex.Message);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("APPMOVER_JOURNAL", oldJournal);
+                try { List<string> j = new List<string>(); SafeDelete.DeleteTree(baseDir, j); } catch { }
+            }
+        }
+
+        private static JournalEntry MakeEntry(string id, string original, string target, string status)
+        {
+            JournalEntry e = new JournalEntry();
+            e.Id = id;
+            e.Time = DateTime.Now.ToString("o");
+            e.Original = original;
+            e.Target = target;
+            e.Status = status;
+            e.Method = "test";
+            return e;
         }
 
         private static void TestRealMachinePaths()

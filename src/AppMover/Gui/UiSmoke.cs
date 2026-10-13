@@ -42,6 +42,9 @@ namespace AppMover.Gui
             try { TestRecoverySurface(); }
             catch (Exception ex) { Fail("恢复入口测试抛异常: " + ex.GetType().Name + ": " + ex.Message); }
 
+            try { TestGuiMovePlumbing(); }
+            catch (Exception ex) { Fail("界面搬移链路测试抛异常: " + ex.GetType().Name + ": " + ex.Message); }
+
             _sb.AppendLine();
             _sb.AppendLine(new string('=', 60));
             _sb.AppendLine(string.Format("通过 {0}   失败 {1}", _pass, _fail));
@@ -227,6 +230,87 @@ namespace AppMover.Gui
                 }
                 catch { }
             }
+        }
+
+        /// <summary>
+        /// 界面的搬移参数链路。
+        ///
+        /// 这是被真实软件实测打脸之后补的：界面的目标盘是 "D:\" 这种带尾部分隔符的形式，
+        /// 而当时的路径规范化会把它削成 "D:"（不是有效目录），
+        /// 于是搬移按钮**一点就报「目标盘目录不存在」** —— 主功能完全不可用，
+        /// 却在只验几何布局的界面测试里毫发无伤。
+        ///
+        /// 这里的断言不看布局，只看「界面自己选出来的目标盘能不能拼出一个有效计划」。
+        /// </summary>
+        private static void TestGuiMovePlumbing()
+        {
+            Section("界面搬移参数链路（几何之外的功能验证）");
+            string baseDir = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_selftest_ui_move");
+            try
+            {
+                if (System.IO.Directory.Exists(baseDir))
+                {
+                    System.Collections.Generic.List<string> j = new System.Collections.Generic.List<string>();
+                    SafeDelete.DeleteTree(baseDir, j);
+                }
+                string app = System.IO.Path.Combine(baseDir, "FakeApp");
+                System.IO.Directory.CreateDirectory(app);
+                System.IO.File.WriteAllText(System.IO.Path.Combine(app, "a.txt"), "a");
+
+                MainForm f = new MainForm();
+                f.Show();
+                Application.DoEvents();
+
+                string targetRoot = f.CurrentTargetRoot;
+                Check(targetRoot != null && targetRoot.Length > 0,
+                    "界面选出了默认目标盘：" + (targetRoot ?? "(null)"));
+
+                if (targetRoot != null)
+                {
+                    // 界面的目标盘必须带尾部分隔符，正是曾经把路径削坏的那种形式
+                    Check(targetRoot.EndsWith("\\", StringComparison.Ordinal),
+                        "目标盘是带尾部分隔符的形式（" + targetRoot + "），即曾经出错的那种输入");
+
+                    MovePlan plan = f.BuildPlanForPath(app, targetRoot);
+
+                    Check(plan.TargetRoot.EndsWith("\\", StringComparison.Ordinal),
+                        "计划里的目标根仍是合法盘根：" + plan.TargetRoot);
+                    Check(!HasBlocker(plan, "目标盘目录不存在"),
+                        "界面选的目标盘不会误报「目录不存在」");
+                    Check(plan.Target.Length > 0 && plan.Target.IndexOf(app.GetHashCode().ToString()) < 0,
+                        "目标位置被正确拼出：" + plan.Target);
+                    Check(plan.Target.EndsWith("FakeApp", StringComparison.Ordinal),
+                        "目标位置以源目录名结尾（同名新家）：" + plan.Target);
+
+                    // 同卷搬移应当被拦（测试数据在程序所在盘，而默认目标盘是另一块盘时不会触发）
+                    Console.WriteLine("         阻止项: " +
+                        (plan.Blockers.Count == 0 ? "(无)" : string.Join("；", plan.Blockers.ToArray())));
+                }
+
+                f.Close();
+                f.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Fail("界面搬移链路测试异常: " + ex.GetType().Name + ": " + ex.Message);
+            }
+            finally
+            {
+                try
+                {
+                    System.Collections.Generic.List<string> j = new System.Collections.Generic.List<string>();
+                    SafeDelete.DeleteTree(baseDir, j);
+                }
+                catch { }
+            }
+        }
+
+        /// <summary>阻止项里是否含某个关键词。</summary>
+        private static bool HasBlocker(MovePlan p, string keyword)
+        {
+            for (int i = 0; i < p.Blockers.Count; i++)
+                if (p.Blockers[i].IndexOf(keyword, StringComparison.Ordinal) >= 0) return true;
+            return false;
         }
 
         private static void CheckButtonsInside(Form f, string tag)

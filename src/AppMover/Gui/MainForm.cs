@@ -535,9 +535,29 @@ namespace AppMover.Gui
 
         // ================= 搬移 =================
 
-        private void OnMove()
+        /// <summary>界面当前选中的目标盘（形如 "D:\"）。</summary>
+        internal string CurrentTargetRoot
         {
-            if (_list.SelectedItems.Count == 0) return;
+            get { return SelectedTargetRoot(); }
+        }
+
+        /// <summary>
+        /// 构建搬移计划 —— 界面搬移流程与冒烟测试**共用这一条路径**。
+        ///
+        /// 为什么要抽出来：真实软件实测时发现界面的搬移按钮根本不能用
+        /// （盘根 "D:\" 被 TrimEnd 削成了 "D:"），而当时的界面测试只验几何布局、
+        /// 从没跑过搬移流程。抽成方法后，测试跑的就是界面真正用的代码；
+        /// 若测试另写一套逻辑，它通过了也证明不了界面能用。
+        /// </summary>
+        internal MovePlan BuildPlanForPath(string source, string targetRoot)
+        {
+            SoftwareIndex idx = SoftwareIndex.Load();
+            Classifier cls = new Classifier(idx);
+            return Relocator.BuildPlan(source, targetRoot, cls, idx, false, false);
+        }
+
+        private void OnMove()
+        {            if (_list.SelectedItems.Count == 0) return;
             ScanRow row = (ScanRow)_list.SelectedItems[0].Tag;
             string targetRoot = SelectedTargetRoot();
             if (targetRoot == null)
@@ -549,10 +569,8 @@ namespace AppMover.Gui
 
             RunBusy("准备搬移：" + row.Path, delegate ()
             {
-                SoftwareIndex idx = SoftwareIndex.Load();
-                Classifier cls = new Classifier(idx);
                 Log("预检中（判定规则、占用检测、硬链接检查、空间校验）…");
-                MovePlan plan = Relocator.BuildPlan(row.Path, targetRoot, cls, idx, false, false);
+                MovePlan plan = BuildPlanForPath(row.Path, targetRoot);
 
                 DialogResult res = DialogResult.Cancel;
                 Invoke((MethodInvoker)delegate
