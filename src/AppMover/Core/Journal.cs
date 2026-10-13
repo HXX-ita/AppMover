@@ -95,11 +95,28 @@ namespace AppMover.Core
         /// <summary>更新某条记录的状态（重写整个文件，日志规模很小）。</summary>
         public static bool UpdateStatus(string id, string status, string message)
         {
+            return UpdateStatus(id, status, message, null);
+        }
+
+        /// <summary>
+        /// 更新记录状态，并可一并修正 junctionCreated。
+        ///
+        /// 为什么要这个可选参数：本方法是从磁盘**重读**记录再写回，
+        /// 所以调用方在内存里改的字段（例如 Execute 里设的 entry.JunctionCreated = true）
+        /// 是保存不下来的 —— 真实搬移测试后才发现日志里 "junctionCreated" 一直是 false，
+        /// 联接明明建成功了。字段写不对的日志比没有这个字段更误导人。
+        /// </summary>
+        public static bool UpdateStatus(string id, string status, string message, bool? junctionCreated)
+        {
             List<JournalEntry> all = ReadAll();
             bool found = false;
             for (int i = 0; i < all.Count; i++)
             {
-                if (all[i].Id == id) { all[i].Status = status; all[i].Message = message; found = true; }
+                if (all[i].Id != id) continue;
+                all[i].Status = status;
+                all[i].Message = message;
+                if (junctionCreated.HasValue) all[i].JunctionCreated = junctionCreated.Value;
+                found = true;
             }
             if (!found) return false;
 

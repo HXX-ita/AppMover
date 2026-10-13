@@ -36,6 +36,29 @@ namespace AppMover.Core
             return c.StartsWith(r, StringComparison.Ordinal);
         }
 
+        /// <summary>
+        /// 去掉尾部分隔符，但**保留盘根**。
+        ///
+        /// 这里有个真实踩过的坑：直接用 TrimEnd('\\') 会把盘根 "D:\" 削成 "D:"，
+        /// 而 "D:" 不是有效目录（它表示"当前目录在该盘上"），后续 Directory.Exists 判定为 false，
+        /// 于是报出「目标盘目录不存在: D:」。
+        ///
+        /// 图形界面传的目标盘恰好就是 "D:\" 这种形式（盘符 + 分隔符），
+        /// 所以这个 bug 让界面的搬移按钮**完全无法工作** —— 而界面测试只验了几何布局，
+        /// 从没跑过搬移流程，因此一直没被发现。
+        /// </summary>
+        public static string TrimTrailingSeparator(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return path;
+            string s = path.Replace('/', '\\');
+            // 长度必须大于 3 才削：盘根 "D:\" 正好是 3，保持原样
+            while (s.Length > 3 && s.EndsWith("\\", StringComparison.Ordinal))
+                s = s.Substring(0, s.Length - 1);
+            // 裸盘符 "D:" 补成盘根 "D:\"
+            if (s.Length == 2 && s[1] == ':') s = s + "\\";
+            return s;
+        }
+
         /// <summary>把路径变成 \\?\ 扩展形式，绕过 260 字符限制。必须是已规范化的绝对路径。</summary>
         public static string ToExtended(string fullPath)
         {

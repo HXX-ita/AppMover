@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -78,8 +78,8 @@ namespace AppMover.Core
             }
 
             // 替换名必须用 NT 命名空间形式 \??\D:\Foo；显示名用普通形式
-            string substitute = @"\??\" + targetPath.TrimEnd('\\');
-            string print = targetPath.TrimEnd('\\');
+            string substitute = @"\??\" + PathUtil.TrimTrailingSeparator(targetPath);
+            string print = PathUtil.TrimTrailingSeparator(targetPath);
 
             byte[] subBytes = Encoding.Unicode.GetBytes(substitute);
             byte[] printBytes = Encoding.Unicode.GetBytes(print);

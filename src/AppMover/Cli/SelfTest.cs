@@ -42,6 +42,7 @@ namespace AppMover
             TestSpaceRule();
             TestCrashRecovery();
             TestElevationRequired();
+            TestDriveRootTarget();
             TestFullRelocateAndUndo();
             TestRealMachinePaths();
 
@@ -349,6 +350,9 @@ namespace AppMover
                 if (all.Count == 0) return;
                 JournalEntry e = all[all.Count - 1];
                 Check(e.Status == "completed", "记录状态为 completed");
+                // 真实软件搬移之后才发现：UpdateStatus 是从磁盘重读记录再写回，
+                // 所以 Execute 在内存里设的 junctionCreated 一直没被保存，日志里永远是 false。
+                Check(e.JunctionCreated, "日志记录了「已建立联接」（这个字段曾经一直是 false）");
 
                 MoveResult un = Relocator.Undo(e, null);
                 Check(un.Success, "撤销执行成功（" + un.Status + "）");
@@ -820,6 +824,56 @@ namespace AppMover
                         Directory.Delete(PathUtil.IoPath(testDir), false);
                 }
                 catch { }
+            }
+        }
+
+        /// <summary>
+        /// 盘根作为目标路径。
+        ///
+        /// 真实 bug：曾经用 TrimEnd('\\') 处理路径，把盘根 "D:\" 削成了 "D:"，
+        /// 而 "D:" 不是有效目录，于是预检报「目标盘目录不存在: D:」。
+        /// 图形界面传的目标盘恰恰就是 "D:\" 这种形式 —— 也就是说界面的搬移按钮
+        /// **完全无法工作**，而界面测试只验了几何布局、从没跑过搬移流程，所以一直没暴露。
+        /// 这条用例同时守住「路径规范化」和「界面传参形式」两个面。
+        /// </summary>
+        private static void TestDriveRootTarget()
+        {
+            Group("盘根作为目标（界面传的就是 D:\\ 这种形式）");
+            Check(PathUtil.TrimTrailingSeparator(@"D:\") == @"D:\", @"盘根不被削成 D:");
+            Check(PathUtil.TrimTrailingSeparator(@"D:") == @"D:\", "裸盘符补成盘根");
+            Check(PathUtil.TrimTrailingSeparator(@"D:\Foo\") == @"D:\Foo", "普通目录去掉尾部分隔符");
+            Check(PathUtil.TrimTrailingSeparator(@"D:\Foo") == @"D:\Foo", "无尾部分隔符时不变");
+            Check(PathUtil.TrimTrailingSeparator(@"D:\Foo\\") == @"D:\Foo", "多重尾部分隔符一并去掉");
+            Check(PathUtil.TrimTrailingSeparator(@"C:/") == @"C:\", "正斜杠形式的盘根也归一");
+
+            string baseDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_selftest_driveroot");
+            try
+            {
+                if (Directory.Exists(baseDir)) { List<string> j = new List<string>(); SafeDelete.DeleteTree(baseDir, j); }
+                string src = Path.Combine(baseDir, "App");
+                Directory.CreateDirectory(src);
+                File.WriteAllText(Path.Combine(src, "a.txt"), "a");
+
+                Classifier cls = new Classifier(new SoftwareIndex());
+                // 用当前程序所在盘的盘根作为目标，正是界面会传的形式
+                string volumeRoot = Path.GetPathRoot(AppDomain.CurrentDomain.BaseDirectory);
+                MovePlan plan = Relocator.BuildPlan(src, volumeRoot, cls, null, false, true);
+
+                Check(!HasBlocker(plan, "目标盘目录不存在"),
+                    "以盘根为目标时不再误报「目标盘目录不存在」（实际阻止项：" +
+                    (plan.Blockers.Count == 0 ? "无" : string.Join("；", plan.Blockers.ToArray())) + "）");
+                Check(plan.TargetRoot.Length > 0 && plan.TargetRoot.EndsWith("\\", StringComparison.Ordinal),
+                    "计划里的目标根仍是合法的盘根形式：" + plan.TargetRoot);
+                Check(plan.Target.Length > 0, "目标位置能被正确拼出来：" + plan.Target);
+            }
+            catch (Exception ex)
+            {
+                _fail++;
+                Console.WriteLine("  FAIL 盘根目标测试异常: " + ex.GetType().Name + ": " + ex.Message);
+            }
+            finally
+            {
+                try { List<string> j = new List<string>(); SafeDelete.DeleteTree(baseDir, j); } catch { }
             }
         }
 

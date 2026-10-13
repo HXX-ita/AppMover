@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
@@ -384,7 +384,7 @@ namespace AppMover
         private static int CmdClassify(string[] args)
         {
             if (args.Length < 2) { Console.Error.WriteLine("用法: classify <路径>"); return 1; }
-            string path = PathUtil.StripExtended(args[1]).TrimEnd('\\');
+            string path = PathUtil.TrimTrailingSeparator(PathUtil.StripExtended(args[1]));
             if (!Directory.Exists(PathUtil.IoPath(path))) { Console.Error.WriteLine("目录不存在: " + path); return 1; }
 
             SoftwareIndex idx = SoftwareIndex.Load();

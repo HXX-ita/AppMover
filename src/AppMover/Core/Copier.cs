@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
@@ -42,7 +42,7 @@ namespace AppMover.Core
             string copyFlags = preserveAcl ? "/COPY:DATS" : "/COPY:DAT";
             string args = string.Format(
                 "\"{0}\" \"{1}\" /E {2} /DCOPY:DAT /R:1 /W:1 /NFL /NDL /NP /NJH /NJS",
-                source.TrimEnd('\\'), target.TrimEnd('\\'), copyFlags);
+                PathUtil.TrimTrailingSeparator(source), PathUtil.TrimTrailingSeparator(target), copyFlags);
 
             int code = Proc.Run("robocopy", args, log, 0);
 
@@ -52,7 +52,7 @@ namespace AppMover.Core
                 if (log != null) log("robocopy 保留 ACL 失败（退出码 " + code + "），降级为仅复制数据与时间戳重试 ...");
                 args = string.Format(
                     "\"{0}\" \"{1}\" /E /COPY:DAT /DCOPY:DAT /R:1 /W:1 /NFL /NDL /NP /NJH /NJS",
-                    source.TrimEnd('\\'), target.TrimEnd('\\'));
+                    PathUtil.TrimTrailingSeparator(source), PathUtil.TrimTrailingSeparator(target));
                 code = Proc.Run("robocopy", args, log, 0);
             }
             return code;
@@ -87,8 +87,8 @@ namespace AppMover.Core
             {
                 if (budget <= 0) break;
                 FileEntry fe = biggest[i];
-                string rel = fe.Path.Substring(source.TrimEnd('\\').Length).TrimStart('\\');
-                string other = Path.Combine(target.TrimEnd('\\'), rel);
+                string rel = fe.Path.Substring(PathUtil.TrimTrailingSeparator(source).Length).TrimStart('\\');
+                string other = Path.Combine(PathUtil.TrimTrailingSeparator(target), rel);
                 if (!File.Exists(PathUtil.IoPath(other)))
                 {
                     r.MissingInTarget.Add(rel);

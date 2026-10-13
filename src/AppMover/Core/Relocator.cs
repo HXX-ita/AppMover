@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Security.Principal;
@@ -91,8 +91,8 @@ namespace AppMover.Core
             MovePlan plan = new MovePlan();
             // 入口统一剥掉 \\?\ 前缀：调用方可能从枚举结果里直接拿来路径，
             // 而计划里的路径会进入界面、日志与字符串比较，带前缀会污染这些地方。
-            plan.Source = PathUtil.StripExtended(source).TrimEnd('\\');
-            plan.TargetRoot = PathUtil.StripExtended(targetRoot).TrimEnd('\\');
+            plan.Source = PathUtil.TrimTrailingSeparator(PathUtil.StripExtended(source));
+            plan.TargetRoot = PathUtil.TrimTrailingSeparator(PathUtil.StripExtended(targetRoot));
 
             if (!Directory.Exists(PathUtil.IoPath(plan.Source)))
             {
@@ -304,7 +304,7 @@ namespace AppMover.Core
 
                 entry.JunctionCreated = true;
                 entry.Status = "completed";
-                Journal.UpdateStatus(entry.Id, "completed", entry.Message);
+                Journal.UpdateStatus(entry.Id, "completed", entry.Message, true);
 
                 r.Success = true; r.Status = "completed";
                 r.Message = "搬移成功。原路径现在是指向 " + plan.Target + " 的目录联接。";
@@ -507,7 +507,7 @@ namespace AppMover.Core
                 // 无歧义的情形：只是日志没更新，或只需清掉半截副本
                 if (it.AutoFix == "mark-completed")
                 {
-                    Journal.UpdateStatus(it.JournalId, "completed", "恢复：确认搬移已完成，补记日志");
+                    Journal.UpdateStatus(it.JournalId, "completed", "恢复：确认搬移已完成，补记日志", true);
                     log("已确认搬移完成并补记日志：" + it.Original);
                     r.Success = true; r.Status = "recovered"; r.Message = "已补记日志";
                     return r;
@@ -526,7 +526,7 @@ namespace AppMover.Core
                     List<string> left = new List<string>();
                     SafeDelete.DeleteTree(it.AsidePath, left);
                     if (left.Count > 0) log("  有 " + left.Count + " 项未能删除");
-                    Journal.UpdateStatus(it.JournalId, "completed", "恢复：联接已生效，清理了残留旧副本");
+                    Journal.UpdateStatus(it.JournalId, "completed", "恢复：联接已生效，清理了残留旧副本", true);
                     r.Success = true; r.Status = "recovered"; r.Message = "已清理残留旧副本";
                     return r;
                 }
@@ -550,7 +550,7 @@ namespace AppMover.Core
                     if (failures.Count > 0) log("  有 " + failures.Count + " 项未能删除：" + it.AsidePath);
 
                     log("3/3 补记日志");
-                    Journal.UpdateStatus(it.JournalId, "completed", "恢复：完成中断的搬移");
+                    Journal.UpdateStatus(it.JournalId, "completed", "恢复：完成中断的搬移", true);
                     r.Success = true; r.Status = "recovered";
                     r.Message = "已把中断的搬移做完，原路径现在指向 " + it.Target;
                     log(r.Message);
@@ -731,7 +731,7 @@ namespace AppMover.Core
 
             if (canary == null) return true;   // 空目录，没有可验证的文件
 
-            string rel = canary.Substring(targetPath.TrimEnd('\\').Length).TrimStart('\\');
+            string rel = canary.Substring(PathUtil.TrimTrailingSeparator(targetPath).Length).TrimStart('\\');
             string viaJunction = Path.Combine(junctionPath, rel);
             try
             {
