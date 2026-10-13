@@ -1,0 +1,123 @@
+name: build
+
+# 什么时候跑：
+#   · 每次推送到 main 或提 PR —— 只构建 + 跑测试，不出 Release
+#   · 推送 v* 标签 —— 构建 + 测试 + 自动创建 GitHub Release
+#   · 手动触发
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+# 创建 Release 需要写权限
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # 必须是 Windows：本项目只做 Windows，而且刻意依赖系统自带的 csc.exe
+    # 与 .NET Framework 4.8（windows-latest 镜像自带，无需安装 SDK）。
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 确定版本号
+        id: ver
+        shell: pwsh
+        run: |
+          $ref = $env:GITHUB_REF
+          if ($ref -like 'refs/tags/v*') {
+            $v = $ref -replace '^refs/tags/v', ''
+          } else {
+            $v = '0.1.0'
+          }
+          Write-Host "版本: $v"
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      # 防回归：PowerShell 5.1 会用系统 ANSI 代码页解码无 BOM 的文件，
+      # 中文乱码可能吃掉 here-string 起始标记导致整脚本解析失败（踩过两次）。
+      # 这种问题在 PR 阶段就该拦下，而不是等用户 clone 之后构建失败。
+      - name: 校验 .ps1 均带 UTF-8 BOM
+        shell: pwsh
+        run: |
+          $bad = @()
+          Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object {
+            $b = [System.IO.File]::ReadAllBytes($_.FullName)
+            if ($b.Length -lt 3 -or $b[0] -ne 0xEF -or $b[1] -ne 0xBB -or $b[2] -ne 0xBF) {
+              $bad += $_.FullName
+            }
+          }
+          if ($bad.Count -gt 0) {
+            $bad | ForEach-Object { Write-Host "缺少 UTF-8 BOM: $_" }
+            throw "有 $($bad.Count) 个 .ps1 文件缺少 UTF-8 BOM，会导致 PowerShell 5.1 解析失败"
+          }
+          Write-Host "所有 .ps1 均带 UTF-8 BOM"
+
+      - name: 构建（csc.exe，无需 .NET SDK）
+        shell: pwsh
+        run: |
+          ./src/build.ps1 -Version "${{ steps.ver.outputs.version }}"
+
+      - name: 内核回归测试（必须全绿）
+        shell: pwsh
+        run: |
+          ./build/AppMover-cli.exe selftest
+          if ($LASTEXITCODE -ne 0) { throw "内核回归测试未通过" }
+
+      # 界面冒烟测试标为「仅供参考」：它需要真正 Show() 一个窗口，
+      # 而 CI 运行器的桌面会话不一定稳定。本地已验证它能抓到布局缺陷
+      # （用变异测试确认过），这里失败不应该把整个流水线卡死。
+      - name: 界面冒烟测试（仅供参考，不阻断）
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          ./src/build.ps1 -SmokeUi -Version "${{ steps.ver.outputs.version }}"
+
+      # 关键一步：把本仓库地址写进随程序发布的 feedback.json。
+      # 这样反馈链接开箱即用，源码里也就不需要硬编码任何人的用户名。
+      - name: 注入反馈仓库地址
+        shell: pwsh
+        run: |
+          $json = '{"repo":"${{ github.repository }}"}'
+          [System.IO.File]::WriteAllText("$PWD/build/feedback.json", $json, (New-Object System.Text.UTF8Encoding($false)))
+          Get-Content "$PWD/build/feedback.json"
+
+      - name: 打包
+        shell: pwsh
+        run: |
+          $stage = "$PWD/dist"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          $files = @(
+            'build/AppMover.exe', 'build/AppMover.exe.config',
+            'build/AppMover-cli.exe', 'build/AppMover-cli.exe.config',
+            'build/feedback.json',
+            'README.md', 'README.en.md', 'LICENSE'
+          )
+          foreach ($f in $files) { Copy-Item $f $stage -Force }
+          Copy-Item 'docs/feedback.html' $stage -Force
+          Compress-Archive -Path "$stage/*" -DestinationPath "$PWD/AppMover-${{ steps.ver.outputs.version }}-win-x64.zip" -Force
+          Get-ChildItem $PWD -Filter '*.zip' | Select-Object Name, Length
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: AppMover-win-x64
+          path: |
+            AppMover-*.zip
+            dist/**
+
+      - name: 创建 Release（仅打标签时）
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = $env:GITHUB_REF -replace '^refs/tags/', ''
+          $zip = Get-ChildItem $PWD -Filter '*.zip' | Select-Object -First 1
+          gh release create $tag $zip.FullName `
+            --title "AppMover $tag" `
+            --notes "Windows 软件搬家工具。下载 zip 解压后双击 AppMover.exe 即可使用，无需安装任何运行时。`n`n详细说明见 README.md / README.en.md。"

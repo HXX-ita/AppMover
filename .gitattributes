@@ -1,0 +1,27 @@
+# 换行符必须显式锁定，不能依赖各人机器上的 core.autocrlf 设置。
+#
+# 为什么 .ps1 必须是 CRLF：
+#   PowerShell 5.1 读取无 BOM 的文件时按系统 ANSI 代码页（中文 Windows 是 GBK）解码。
+#   仓库里的 .ps1 都带 UTF-8 BOM，但换行如果变成纯 LF，历史上出现过 here-string
+#   起始标记被解析错、整脚本报 "Missing using directive" 的情况。
+#   把它固定在 CRLF 上，clone 到任何机器结果都一致。
+#
+# BOM 无法由 .gitattributes 保证（它是文件内容），因此 CI 里另有一道检查。
+
+*.ps1   text eol=crlf
+*.cs    text eol=crlf
+*.manifest text eol=crlf
+
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.html  text eol=lf
+*.json  text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+
+# 二进制文件不做任何转换
+*.exe   binary
+*.dll   binary
+*.png   binary
+*.ico   binary

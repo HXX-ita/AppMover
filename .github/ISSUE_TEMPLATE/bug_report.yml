@@ -1,0 +1,77 @@
+name: 程序报错
+description: 程序崩溃、命令报错、搬移或撤销失败
+title: "[反馈][报错] "
+labels: ["feedback", "bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **提交前请先确认：出问题的目录里有没有你不想公开的路径。**
+        程序生成的报告已经把用户名和计算机名替换成了占位符，但目录名本身会保留。
+
+        生成报告：
+
+        ```
+        AppMover-cli.exe feedback --error "报错原文" --open
+        ```
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 你做了什么，发生了什么
+      description: 例如「对 D:\某目录 执行 move，在第 4 步建立联接时失败」
+    validations:
+      required: true
+
+  - type: textarea
+    id: message
+    attributes:
+      label: 报错原文
+      description: 直接粘贴，不要改写或概括
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: 出问题的环节
+      options:
+        - 扫描
+        - 预检 / 规划（plan）
+        - 复制
+        - 校验
+        - 改名让位
+        - 建立目录联接
+        - 删除旧副本
+        - 撤销
+        - 反馈报告
+        - 界面 / 其他
+    validations:
+      required: true
+
+  - type: dropdown
+    id: admin
+    attributes:
+      label: 是否以管理员身份运行
+      options:
+        - "否"
+        - "是"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 程序版本
+      placeholder: 0.1.0.0
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: data
+    attributes:
+      label: 数据安全确认
+      options:
+        - label: 我的重要数据没有丢失（如果丢失了，请立刻停止操作并直接描述现状，这属于最高优先级）
+          required: false

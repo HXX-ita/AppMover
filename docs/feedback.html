@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>软件搬家 · AppMover — 反馈中心</title>
+<style>
+  :root { --fg:#1a1a1a; --muted:#5b6470; --line:#e3e6ea; --accent:#12805c; --warn:#b26a00; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:"Microsoft YaHei",system-ui,-apple-system,sans-serif; color:var(--fg);
+         background:#f5f6f8; line-height:1.65; }
+  header { background:#1f2937; color:#fff; padding:28px 22px; }
+  header h1 { margin:0; font-size:22px; }
+  header p { margin:8px 0 0; font-size:14px; opacity:.82; }
+  main { max-width:860px; margin:0 auto; padding:22px; }
+  section { background:#fff; border:1px solid var(--line); border-radius:10px; padding:20px 22px; margin-bottom:18px; }
+  h2 { font-size:17px; margin:0 0 12px; }
+  h3 { font-size:14px; margin:18px 0 8px; color:var(--muted); }
+  p, li { font-size:14px; }
+  code { background:#eef1f5; padding:1px 6px; border-radius:5px; font-family:Consolas,monospace; font-size:13px; }
+  textarea, input[type=text] { width:100%; padding:10px 12px; border:1px solid #cbd5e1; border-radius:8px;
+                               font-family:Consolas,"Microsoft YaHei",monospace; font-size:13px; }
+  textarea { min-height:170px; resize:vertical; }
+  label { display:block; font-size:13px; color:var(--muted); margin:12px 0 5px; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:11px 20px;
+           font-size:14px; cursor:pointer; font-family:inherit; }
+  button:hover { filter:brightness(1.08); }
+  button.ghost { background:#eef1f5; color:var(--fg); }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:14px; }
+  .note { background:#fff8e6; border-left:3px solid var(--warn); padding:12px 15px; border-radius:6px; font-size:13px; }
+  .ok { color:var(--accent); font-weight:600; }
+  ol, ul { padding-left:22px; }
+  footer { text-align:center; color:var(--muted); font-size:12px; padding:26px 18px 40px; }
+  .kv { display:grid; grid-template-columns:130px 1fr; gap:6px 14px; font-size:13px; }
+  .kv div:nth-child(odd){ color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>软件搬家 · AppMover — 反馈中心</h1>
+  <p>把 C 盘上的软件与数据文件夹安全搬到其他磁盘，并在原位置留下目录联接，让软件照常可用。</p>
+</header>
+
+<main>
+
+<section>
+  <h2>这个页面是干什么的</h2>
+  <p>本软件是便携工具，<strong>不连接任何自建服务器</strong>。所有反馈都通过 GitHub Issue 收集，
+     所以你的反馈是公开、可追踪、能被长期保存的。</p>
+  <p>程序内置了报告生成器：遇到<strong>没见过的目录名</strong>、<strong>判定明显不对</strong>或
+     <strong>运行报错</strong>时，它会生成一份已脱敏的诊断报告，并给出一个预先填好的提交链接。</p>
+</section>
+
+<section>
+  <h2>方式一：在程序里直接反馈（推荐）</h2>
+  <p>程序遇到把握不大的判断时会主动提示。也可以随时手动运行：</p>
+  <h3>上报一个判定有问题的目录</h3>
+  <p><code>AppMover.exe feedback --path "C:\你的\目录" --open</code></p>
+  <h3>上报一个运行报错</h3>
+  <p><code>AppMover.exe feedback --error "错误信息原文" --open</code></p>
+  <h3>批量上报「规则没见过」的目录名</h3>
+  <p><code>AppMover.exe feedback --unknown</code></p>
+  <p>程序会在自己所在目录下生成 <code>feedback\feedback-时间戳.md</code> 与 <code>.json</code>，
+     并打印一个 GitHub 提交链接。加 <code>--open</code> 会直接打开浏览器。</p>
+  <div class="note">报告<strong>只包含</strong>目录名、路径、判定结果和环境版本，
+     <strong>不读取、不上传任何文件内容</strong>；路径中的用户名和计算机名会被替换成
+     <code>&lt;user&gt;</code> 与 <code>&lt;PC&gt;</code>。提交前你可以在页面上看到全文。</div>
+</section>
+
+<section>
+  <h2>方式二：手工粘贴报告生成提交链接</h2>
+  <p>如果你把报告文件复制到了别处，或者想自己改写内容，粘贴到下面即可生成提交链接。</p>
+
+  <label for="repo">目标仓库（owner/repo）</label>
+  <input type="text" id="repo" placeholder="例如 someone/AppMover" value="">
+
+  <label for="kind">反馈类型</label>
+  <input type="text" id="kind" placeholder="判定错误 / 运行报错 / 兼容性 / 其他" value="判定错误">
+
+  <label for="summary">一句话说明（会作为标题）</label>
+  <input type="text" id="summary" placeholder="例如：C:\Program Files\某软件 被判成「疑似残留」，但它其实在用" value="">
+
+  <label for="body">报告内容（直接粘贴 feedback-*.md 的内容）</label>
+  <textarea id="body" placeholder="把程序生成的报告内容粘贴到这里……"></textarea>
+
+  <div class="row">
+    <button onclick="make()">生成并打开发布页</button>
+    <button class="ghost" onclick="copyLink()">只复制链接</button>
+    <span id="status" class="ok"></span>
+  </div>
+  <p id="preview" style="font-size:12px;color:var(--muted);word-break:break-all;"></p>
+</section>
+
+<section>
+  <h2>报告里包含什么</h2>
+  <div class="kv">
+    <div>程序版本</div><div>用于定位是哪个版本的问题</div>
+    <div>系统与架构</div><div>Windows 版本、x64/x86</div>
+    <div>是否管理员</div><div>判断是否是权限导致的问题</div>
+    <div>磁盘列表</div><div>盘符、文件系统、可用空间</div>
+    <div>相关路径</div><div>已把用户名/机器名替换为占位符</div>
+    <div>判定与依据</div><div>规则为什么给出这个结论</div>
+    <div>把握不大的目录</div><div>最需要人工复核、也是改进规则最需要的数据</div>
+  </div>
+  <h3>不包含</h3>
+  <ul>
+    <li>任何文件内容</li>
+    <li>任何账号、密码、密钥</li>
+    <li>你的真实用户名与计算机名</li>
+  </ul>
+</section>
+
+<section>
+  <h2>提交前请检查</h2>
+  <ol>
+    <li>标题是否能让人一眼看懂问题</li>
+    <li>报告里有没有你不想公开的路径（可手工删掉那几行）</li>
+    <li>如果是「判定错误」，请补一句<strong>正确的判断应该是什么</strong>，这比什么都重要</li>
+  </ol>
+  <div class="note">只做 Windows 适配。macOS / Linux 不在支持范围内。</div>
+</section>
+
+</main>
+
+<footer>
+  软件搬家 · AppMover &nbsp;|&nbsp; MIT License &nbsp;|&nbsp; 本页面为静态页面，不收集也不上传任何数据
+</footer>
+
+<script>
+// 允许通过 ?repo=owner/name 指定仓库，便于在没有自建服务的情况下部署到任意位置
+(function () {
+  var q = new URLSearchParams(location.search);
+  var r = q.get('repo');
+  if (r) document.getElementById('repo').value = r;
+})();
+
+function issueUrl() {
+  var repo = document.getElementById('repo').value.trim() || 'REPLACE-ME/AppMover';
+  var kind = document.getElementById('kind').value.trim() || '反馈';
+  var summary = document.getElementById('summary').value.trim() || '（请补充一句话说明）';
+  var body = document.getElementById('body').value;
+  var title = '[反馈][' + kind + '] ' + summary;
+  return 'https://github.com/' + repo + '/issues/new'
+       + '?title=' + encodeURIComponent(title)
+       + '&body=' + encodeURIComponent(body)
+       + '&labels=' + encodeURIComponent('feedback');
+}
+
+function make() {
+  var url = issueUrl();
+  document.getElementById('preview').textContent = url;
+  document.getElementById('status').textContent = '已生成，正在打开…';
+  window.open(url, '_blank');
+}
+
+function copyLink() {
+  var url = issueUrl();
+  document.getElementById('preview').textContent = url;
+  var done = function () { document.getElementById('status').textContent = '链接已复制'; };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(done, function () { done(); });
+  } else {
+    var t = document.createElement('textarea');
+    t.value = url; document.body.appendChild(t); t.select();
+    try { document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(t); done();
+  }
+}
+</script>
+</body>
+</html>

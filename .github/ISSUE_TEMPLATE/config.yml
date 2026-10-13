@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 反馈中心（生成预填报告）
+    url: https://github.com/REPLACE-ME/AppMover/blob/main/docs/FEEDBACK.md
+    about: 反馈机制说明：程序如何生成脱敏报告、以及报告里到底包含什么
+  - name: 设计说明书
+    url: https://github.com/REPLACE-ME/AppMover/blob/main/docs/SPEC.md
+    about: 判定规则、搬移流程、权限模型与风险清单

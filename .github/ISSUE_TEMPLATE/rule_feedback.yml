@@ -1,0 +1,70 @@
+name: 判定错误 / 规则反馈
+description: 某个文件夹被分错了类别（本该能搬却标成禁止，或反过来），或者你觉得判定依据不合理
+title: "[反馈][判定] "
+labels: ["feedback", "rule-gap"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        谢谢反馈。判定规则是这个工具的核心，误判会直接导致用户不敢搬、或者搬错东西。
+
+        **最快的方式**是让程序自己生成报告（它会把路径脱敏、并附上判定依据）：
+
+        ```
+        AppMover-cli.exe feedback --path "出问题的目录" --open
+        ```
+
+        也可以直接跑 `AppMover-cli.exe classify "路径"` 把输出贴到下面。
+
+  - type: input
+    id: path
+    attributes:
+      label: 出问题的目录路径
+      description: 如果不想公开真实用户名，把中间那一段替换成 <user> 即可
+      placeholder: C:\Program Files\某软件
+    validations:
+      required: true
+
+  - type: dropdown
+    id: current
+    attributes:
+      label: 程序当前给出的判定
+      options:
+        - 可安全搬移
+        - 可搬但需小心
+        - 禁止搬移
+        - 疑似残留可清理
+        - 程序报错，没有给出判定
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 你认为正确的判定应该是什么？为什么？
+      description: |
+        这一项**必须填**。只说「判错了」无法改进规则 —— 规则需要知道正确答案以及依据，
+        例如「这个目录其实是某软件正在使用的数据，不是卸载残留」。
+      placeholder: |
+        我认为应该是「可安全搬移」，因为：
+        · 这是 XX 软件的用户数据目录，软件还在用
+        · 目录里只有配置和缓存文件，没有可执行文件
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 判定依据 / 程序输出
+      description: 把 `classify` 命令的输出或 `feedback` 生成的报告内容粘贴到这里
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 程序版本
+      placeholder: 0.1.0.0（在「关于与反馈」页可以看到）
+    validations:
+      required: false
