@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -39,6 +39,8 @@ namespace AppMover
             TestHardlinkDetection();
             TestLongPathHandling();
             TestGuardBlockers();
+            TestSpaceRule();
+            TestCrashRecovery();
             TestFullRelocateAndUndo();
             TestRealMachinePaths();
 
@@ -584,6 +586,155 @@ namespace AppMover
             for (int i = 0; i < p.Blockers.Count; i++)
                 if (p.Blockers[i].IndexOf(keyword, StringComparison.Ordinal) >= 0) return true;
             return false;
+        }
+
+        /// <summary>目标盘空间规则。只有两块大盘的机器上没法把盘写满，所以规则本身必须可单测。</summary>
+        private static void TestSpaceRule()
+        {
+            Group("目标盘空间规则");
+            long mb = 1024 * 1024;
+            Check(Relocator.HasEnoughSpace(0, 64 * mb), "空目录：64 MB 余量恰好够");
+            Check(!Relocator.HasEnoughSpace(0, 63 * mb), "空目录：63 MB 不够（固定余量占位）");
+            Check(!Relocator.HasEnoughSpace(900 * mb, 1000 * mb), "需 900 MB / 有 1000 MB：不够（要留 5% + 64 MB）");
+            Check(Relocator.HasEnoughSpace(900 * mb, 1100 * mb), "需 900 MB / 有 1100 MB：够");
+            Check(!Relocator.HasEnoughSpace(100 * mb, 100 * mb), "刚好等于所需：不够（余量为零）");
+            Check(Relocator.HasEnoughSpace(1024 * mb, 2048 * mb), "需 1 GB / 有 2 GB：够");
+            Check(!Relocator.HasEnoughSpace(10240 * mb, 10240 * mb), "需 10 GB / 恰好 10 GB：不够");
+        }
+
+        /// <summary>
+        /// 崩溃恢复。
+        ///
+        /// 这是「声称了安全却没给恢复路径」的典型：搬移中途断电/被强杀时，
+        /// 数据本身完好（改名让位而不是删除），但原路径会空着、软件起不来。
+        /// 之前只有一条 planned 日志，没有任何修复手段。
+        ///
+        /// 验证方式：用子进程在指定阶段调用 Environment.Exit 真实猝死
+        /// （绕过所有 catch/finally，不做回滚），再让恢复逻辑去修。
+        /// </summary>
+        private static void TestCrashRecovery()
+        {
+            Group("崩溃恢复（断电 / 被强杀后的现场修复）");
+            string baseDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_selftest_crash");
+            string journalPath = Path.Combine(baseDir, "journal.jsonl");
+            string oldJournal = Environment.GetEnvironmentVariable("APPMOVER_JOURNAL");
+            try
+            {
+                if (Directory.Exists(baseDir))
+                {
+                    List<string> j = new List<string>();
+                    SafeDelete.DeleteTree(baseDir, j);
+                }
+                string srcRoot = Path.Combine(baseDir, "srcvol");
+                string dstRoot = Path.Combine(baseDir, "dstvol");
+                Directory.CreateDirectory(srcRoot);
+                Directory.CreateDirectory(dstRoot);
+                Environment.SetEnvironmentVariable("APPMOVER_JOURNAL", journalPath);
+
+                // 场景 A：崩溃于「改名之后、建联接之前」——最需要修复的状态
+                string app = Path.Combine(srcRoot, "CrashApp");
+                Directory.CreateDirectory(app);
+                File.WriteAllText(Path.Combine(app, "keep.txt"), "很重要的数据");
+
+                int code; string childOut;
+                code = SpawnCrash(app, dstRoot, journalPath, "junction", out childOut);
+                Check(code == 99, "子进程在建立联接前真实猝死（退出码 " + code + "）");
+                if (code != 99) Console.WriteLine("         子进程输出: " + childOut);
+
+                Check(!Directory.Exists(PathUtil.IoPath(app)), "崩溃后原路径确实不存在（正是需要修复的状态）");
+                string[] leftovers = Directory.GetDirectories(PathUtil.IoPath(srcRoot));
+                Check(leftovers.Length == 1 && leftovers[0].IndexOf(".appmover-old-", StringComparison.Ordinal) >= 0,
+                    "现场留下改名后的目录（共 " + leftovers.Length + " 项）");
+                Check(File.Exists(Path.Combine(dstRoot, "CrashApp", "keep.txt")), "目标盘有完整副本");
+
+                List<Relocator.RecoveryItem> items = Relocator.FindInterrupted();
+                Check(items.Count == 1, "找到 1 项被中断的操作（实际 " + items.Count + "）");
+                if (items.Count != 1) return;
+                Check(items[0].CanRestore, "现场判定：可以还原");
+                Check(items[0].CanComplete, "现场判定：可以把搬移做完");
+
+                // A1：还原
+                MoveResult r1 = Relocator.Recover(items[0], false, null);
+                Check(r1.Success && r1.Status == "restored", "还原成功（" + r1.Status + "：" + r1.Message + "）");
+                Check(!PathUtil.IsReparsePoint(app), "还原后原路径是真实目录");
+                Check(File.ReadAllText(Path.Combine(app, "keep.txt")) == "很重要的数据", "还原后数据完好");
+                Check(!Directory.Exists(Path.Combine(dstRoot, "CrashApp")), "还原后目标盘副本已清理");
+                Check(Relocator.FindInterrupted().Count == 0, "还原后该记录不再是「被中断」");
+
+                // 场景 B：再崩一次，这次选择"把搬移做完"
+                string app2 = Path.Combine(srcRoot, "CrashApp2");
+                Directory.CreateDirectory(app2);
+                File.WriteAllText(Path.Combine(app2, "keep2.txt"), "第二份数据");
+                int code2; string childOut2;
+                code2 = SpawnCrash(app2, dstRoot, journalPath, "junction", out childOut2);
+                Check(code2 == 99, "第二次崩溃注入成功");
+                if (code2 != 99) Console.WriteLine("         子进程输出: " + childOut2);
+
+                List<Relocator.RecoveryItem> items2 = Relocator.FindInterrupted();
+                Check(items2.Count == 1, "第二次中断同样被找到（实际 " + items2.Count + "）");
+                if (items2.Count != 1) return;
+                MoveResult r2 = Relocator.Recover(items2[0], true, null);
+                Check(r2.Success && r2.Status == "recovered", "完成中断的搬移成功（" + r2.Status + "）");
+                Check(PathUtil.IsReparsePoint(app2), "完成后原路径是联接");
+                Check(File.ReadAllText(Path.Combine(app2, "keep2.txt")) == "第二份数据", "通过联接读到数据");
+                Check(!Directory.Exists(PathUtil.IoPath(items2[0].AsidePath)), "改名后的旧副本已清理");
+
+                // 场景 C：崩溃于「联接已建立、旧副本未删」——必须清掉残留副本而不是只标记完成
+                string app3 = Path.Combine(srcRoot, "CrashApp3");
+                Directory.CreateDirectory(app3);
+                File.WriteAllText(Path.Combine(app3, "keep3.txt"), "第三份数据");
+                int code3; string childOut3;
+                code3 = SpawnCrash(app3, dstRoot, journalPath, "verify-junction", out childOut3);
+                Check(code3 == 99, "第三次崩溃注入成功（联接已建、未删旧副本）");
+                if (code3 != 99) Console.WriteLine("         子进程输出: " + childOut3);
+
+                List<Relocator.RecoveryItem> items3 = Relocator.FindInterrupted();
+                Check(items3.Count == 1, "第三次中断被找到");
+                if (items3.Count != 1) return;
+                Check(items3[0].AutoFix == "cleanup-aside",
+                    "现场被识别为「需清理残留旧副本」而不是「只标记完成」（实际 " + items3[0].AutoFix + "）");
+                Check(Directory.Exists(PathUtil.IoPath(items3[0].AsidePath)), "确认旧副本确实还在（测试前提）");
+                MoveResult r3 = Relocator.Recover(items3[0], false, null);
+                Check(r3.Success, "自动清理成功");
+                Check(!Directory.Exists(PathUtil.IoPath(items3[0].AsidePath)), "残留旧副本已被清理");
+                Check(File.ReadAllText(Path.Combine(app3, "keep3.txt")) == "第三份数据", "联接仍可正常读取数据");
+            }
+            catch (Exception ex)
+            {
+                _fail++;
+                Console.WriteLine("  FAIL 崩溃恢复测试异常: " + ex.GetType().Name + ": " + ex.Message);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("APPMOVER_JOURNAL", oldJournal);
+                try { List<string> j = new List<string>(); SafeDelete.DeleteTree(baseDir, j); } catch { }
+            }
+        }
+
+        /// <summary>用子进程在指定阶段真实猝死，返回退出码。</summary>
+        private static int SpawnCrash(string source, string targetRoot, string journalPath, string crashStage, out string output)
+        {
+            string exe = System.Reflection.Assembly.GetEntryAssembly().Location;
+            ProcessStartInfo psi = new ProcessStartInfo(exe);
+            // 注意：路径**不能**以反斜杠结尾再加右引号 —— 那个反斜杠会把引号转义掉，
+            // 参数被切开、目标盘变成不存在的路径，预检直接拦下（曾经因此拿到退出码 2）。
+            // PowerShell 自己拼参数时不会有这个问题，所以手工测试发现不了。
+            psi.Arguments = "move \"" + source.TrimEnd('\\') + "\" --to \""
+                + targetRoot.TrimEnd('\\') + "\" --allow-same-volume";
+            psi.UseShellExecute = false;
+            psi.CreateNoWindow = true;
+            psi.RedirectStandardOutput = true;
+            psi.RedirectStandardError = true;
+            psi.EnvironmentVariables["APPMOVER_JOURNAL"] = journalPath;
+            psi.EnvironmentVariables["APPMOVER_TEST_CRASH_STAGE"] = crashStage;
+            using (Process p = Process.Start(psi))
+            {
+                string so = p.StandardOutput.ReadToEnd();
+                string se = p.StandardError.ReadToEnd();
+                p.WaitForExit();
+                output = so + se;
+                return p.ExitCode;
+            }
         }
 
         private static void TestRealMachinePaths()

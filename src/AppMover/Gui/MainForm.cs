@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -71,6 +71,10 @@ namespace AppMover.Gui
             Log("就绪。选择目标盘后点击「开始扫描」。");
             Log("提示：搬移 Program Files / ProgramData 下的项目需要管理员权限。当前" +
                 (Security.IsElevated() ? "已提权。" : "未提权。"));
+
+            // 启动时检查上次是否有搬移没走完（断电/被强杀）。
+            // 放在 Shown 而不是构造函数里：窗口先显示出来，再进行可能耗时或弹窗的检查。
+            Shown += delegate { CheckInterrupted(false); };
         }
 
         // ================= 界面构建 =================
@@ -231,9 +235,15 @@ namespace AppMover.Gui
             _undoBtn.Click += delegate { OnUndo(); };
             top.Controls.Add(_undoBtn);
 
+            Button recoverBtn = new Button();
+            recoverBtn.Text = "处理未完成的搬移";
+            recoverBtn.Left = 204; recoverBtn.Top = 9; recoverBtn.Width = 140; recoverBtn.Height = 27;
+            recoverBtn.Click += delegate { CheckInterrupted(true); };
+            top.Controls.Add(recoverBtn);
+
             Label hint = new Label();
             hint.Text = "撤销 = 拆掉联接 → 把数据搬回原位置 → 校验 → 删除目标盘副本。只有状态为 completed 的记录可以撤销。";
-            hint.Left = 214; hint.Top = 14; hint.Width = 700;
+            hint.Left = 356; hint.Top = 14; hint.Width = 620;
             hint.ForeColor = Color.FromArgb(90, 100, 115);
             top.Controls.Add(hint);
 
@@ -564,6 +574,73 @@ namespace AppMover.Gui
                     });
                 BeginInvoke((MethodInvoker)delegate { RefreshJournal(); });
             });
+        }
+
+        /// <summary>
+        /// 处理被中断的搬移（断电 / 被强杀）。
+        ///
+        /// 为什么界面必须管这件事：搬移中途死掉时，数据其实没丢（用的是改名让位而不是删除），
+        /// 但原路径会空着、软件打不开。用户只会看到"软件坏了"，根本不知道有一条恢复命令。
+        /// 所以启动时主动提示，并把交互入口放在历史页。
+        /// 结论无歧义的（只是日志没更新、或只剩半截副本）直接自动处理，不打扰用户。
+        /// </summary>
+        private void CheckInterrupted(bool interactive)
+        {
+            List<Relocator.RecoveryItem> items = Relocator.FindInterrupted();
+            if (items.Count == 0)
+            {
+                if (interactive)
+                    MessageBox.Show(this, "没有未完成的搬移操作。", "检查完成",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            Log("检测到 " + items.Count + " 次未完成的搬移操作。");
+            for (int i = 0; i < items.Count; i++)
+            {
+                Relocator.RecoveryItem it = items[i];
+                Log("  记录 " + it.JournalId + "：" + it.Situation);
+
+                if (it.AutoFixable)
+                {
+                    MoveResult rr = Relocator.Recover(it, false, this.Log);
+                    Log("    自动处理：" + rr.Message);
+                    continue;
+                }
+
+                if (!it.CanRestore && !it.CanComplete)
+                {
+                    Log("    需要人工检查（数据可能在 " + it.Target + "）");
+                    if (interactive)
+                        MessageBox.Show(this,
+                            "记录 " + it.JournalId + " 需要人工检查：\r\n\r\n" + it.Situation
+                            + "\r\n\r\n数据可能在：" + it.Target,
+                            "需要人工处理", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    continue;
+                }
+
+                if (!interactive)
+                {
+                    Log("    请到「历史记录与撤销」页点「处理未完成的搬移」来选择处理方式");
+                    continue;
+                }
+
+                string msg = "上次的搬移没有完成（可能是断电，或程序被强制结束）。\r\n\r\n"
+                    + "原路径：" + it.Original + "\r\n"
+                    + "目标路径：" + it.Target + "\r\n\r\n"
+                    + "现场：" + it.Situation + "\r\n\r\n"
+                    + "数据没有丢失。请选择处理方式：\r\n\r\n"
+                    + "「是」= 把搬移做完（原路径变成指向目标盘的联接）\r\n"
+                    + "「否」= 还原到操作前的状态（数据搬回原路径）\r\n"
+                    + "「取消」= 先不动，稍后处理";
+                DialogResult r = MessageBox.Show(this, msg, "未完成的搬移 " + it.JournalId,
+                    MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
+                if (r == DialogResult.Cancel) { Log("    已跳过，稍后可再次处理"); continue; }
+
+                MoveResult res = Relocator.Recover(it, r == DialogResult.Yes, this.Log);
+                Log("    处理结果：" + res.Message);
+            }
+            RefreshJournal();
         }
 
         private void OnUndo()

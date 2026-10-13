@@ -158,9 +158,9 @@ namespace AppMover.Core
                 string why = vol.WhyNotHost();
                 if (why != null) plan.Blockers.Add("目标卷不合适：" + why);
                 plan.TargetFreeBytes = vol.FreeBytes;
-                if (vol.FreeBytes < plan.Bytes + (plan.Bytes / 20) + (64L * 1024 * 1024))
-                    plan.Blockers.Add(string.Format("目标盘剩余空间不足：可用 {0:F2} GB，需要约 {1:F2} GB（含 5% 余量）",
-                        vol.FreeBytes / 1073741824.0, (plan.Bytes * 1.05) / 1073741824.0));
+                if (!HasEnoughSpace(plan.Bytes, vol.FreeBytes))
+                    plan.Blockers.Add(string.Format("目标盘剩余空间不足：可用 {0:F2} GB，需要约 {1:F2} GB（含 5% 余量与 64 MB 固定余量）",
+                        vol.FreeBytes / 1073741824.0, (plan.Bytes * 1.05 + 67108864) / 1073741824.0));
             }
 
             // 目标位置冲突
@@ -197,8 +197,7 @@ namespace AppMover.Core
         }
 
         public static MoveResult Execute(MovePlan plan, bool dryRun, Action<string> log)
-        {
-            MoveResult r = new MoveResult();
+        {            MoveResult r = new MoveResult();
             r.JournalId = Journal.NewId();
             if (log == null) log = delegate (string s) { };
 
@@ -236,6 +235,7 @@ namespace AppMover.Core
 
                 // 1) 复制
                 stage = "copy";
+                CrashPoint(stage, log);
                 log("1/6 复制 " + plan.Source + "  →  " + plan.Target);
                 int rc = Copier.RunRobocopy(plan.Source, plan.Target, true, log);
                 r.Steps.Add("copy exit=" + rc);
@@ -249,6 +249,7 @@ namespace AppMover.Core
 
                 // 2) 校验
                 stage = "verify";
+                CrashPoint(stage, log);
                 log("2/6 校验副本");
                 CopyReport rep = Copier.Verify(plan.Source, plan.Target, 8, 268435456, log);
                 r.Steps.Add("verify ok=" + rep.Ok);
@@ -263,18 +264,21 @@ namespace AppMover.Core
 
                 // 3) 源目录改名让位（可回滚窗口从这里开始）
                 stage = "rename";
+                CrashPoint(stage, log);
                 log("3/6 源目录改名为 " + Path.GetFileName(oldPath) + "（换出回滚窗口）");
                 Directory.Move(PathUtil.IoPath(plan.Source), PathUtil.IoPath(oldPath));
                 sourceRenamed = true;
 
                 // 4) 建立联接
                 stage = "junction";
+                CrashPoint(stage, log);
                 log("4/6 在原位置建立目录联接");
                 Junction.Create(plan.Source, plan.Target);
                 junctionCreated = true;
 
                 // 5) 验证联接
                 stage = "verify-junction";
+                CrashPoint(stage, log);
                 log("5/6 验证联接");
                 string real = PathUtil.TryGetRealPath(plan.Source);
                 if (real == null || PathUtil.Normalize(real) != PathUtil.Normalize(plan.Target))
@@ -287,6 +291,7 @@ namespace AppMover.Core
 
                 // 6) 删除改名后的旧目录
                 stage = "cleanup";
+                CrashPoint(stage, log);
                 log("6/6 删除旧副本 " + Path.GetFileName(oldPath));
                 List<string> failures = new List<string>();
                 bool cleaned = SafeDelete.DeleteTree(oldPath, failures);
@@ -347,6 +352,239 @@ namespace AppMover.Core
             entry.Status = status; entry.Message = message;
             Journal.UpdateStatus(entry.Id, status, message);
             return r;
+        }
+
+        /// <summary>
+        /// 测试专用：模拟进程在搬移中途猝死（断电、被强杀、崩溃）。
+        ///
+        /// 为什么必须有它：真正的崩溃恢复只能靠"真的崩一次"来验证。
+        /// 抛异常走的是 catch 分支（会被回滚），完全测不到"没来得及回滚就死了"的状态。
+        /// 所以这里用 Environment.Exit 绕过所有 catch/finally，精确复现猝死现场。
+        /// 只认环境变量 APPMOVER_TEST_CRASH_STAGE，正常运行绝不会触发。
+        /// </summary>
+        private static void CrashPoint(string stage, Action<string> log)
+        {
+            string want = Environment.GetEnvironmentVariable("APPMOVER_TEST_CRASH_STAGE");
+            if (string.IsNullOrEmpty(want)) return;
+            if (!string.Equals(want.Trim(), stage, StringComparison.OrdinalIgnoreCase)) return;
+            if (log != null) log("[测试] 在阶段 [" + stage + "] 模拟进程猝死（不做任何回滚）");
+            Environment.Exit(99);
+        }
+
+        /// <summary>
+        /// 目标盘空间是否足够。抽成独立方法是为了让这条规则本身可被测试 ——
+        /// 在只有两块大盘的机器上，无法真的把盘写满来验证它。
+        /// 留 5% 余量加 64 MB 固定余量：元数据、日志、以及复制过程中的临时开销。
+        /// </summary>
+        public static bool HasEnoughSpace(long needBytes, long freeBytes)
+        {
+            return freeBytes >= needBytes + (needBytes / 20) + (64L * 1024 * 1024);
+        }
+
+        // ==================== 崩溃恢复 ====================
+
+        /// <summary>一次被中断的搬移操作的现场。</summary>
+        public class RecoveryItem
+        {
+            public string JournalId = "";
+            public string Original = "";
+            public string AsidePath = "";
+            public string Target = "";
+            public string Situation = "";
+
+            /// <summary>能把改名后的目录还原回原位。</summary>
+            public bool CanRestore;
+            /// <summary>能把搬移做完（建联接 + 删旧副本）。</summary>
+            public bool CanComplete;
+            /// <summary>结论无歧义，可直接按 AutoFix 处理，不需要用户选择。</summary>
+            public bool AutoFixable;
+            public string AutoFix = "";     // mark-completed | cleanup-target
+            /// <summary>最坏情况：原路径与改名目录都不在，需要人工检查。</summary>
+            public bool SourceGone;
+        }
+
+        /// <summary>
+        /// 找出所有被中断的搬移（日志里状态还是 planned 的记录），并勘查现场。
+        ///
+        /// 为什么以日志为准：Execute 在动任何文件之前**先**写一条 planned 记录，
+        /// 所以只要日志里有 planned，就说明那次操作没走完；反过来日志里没有的操作
+        /// 一定没动过文件。这个顺序正是恢复能力的基础。
+        /// </summary>
+        public static List<RecoveryItem> FindInterrupted()
+        {
+            List<RecoveryItem> list = new List<RecoveryItem>();
+            List<JournalEntry> all = Journal.ReadAll();
+            for (int i = 0; i < all.Count; i++)
+            {
+                JournalEntry e = all[i];
+                if (e.Status != "planned") continue;
+                list.Add(Inspect(e));
+            }
+            return list;
+        }
+
+        private static RecoveryItem Inspect(JournalEntry e)
+        {
+            RecoveryItem it = new RecoveryItem();
+            it.JournalId = e.Id;
+            it.Original = e.Original;
+            it.Target = e.Target;
+            it.AsidePath = e.Original + ".appmover-old-" + e.Id;
+
+            bool originalExists = Directory.Exists(PathUtil.IoPath(e.Original));
+            bool originalIsLink = originalExists && PathUtil.IsReparsePoint(e.Original);
+            bool asideExists = Directory.Exists(PathUtil.IoPath(it.AsidePath));
+            bool targetExists = Directory.Exists(PathUtil.IoPath(e.Target));
+
+            if (originalIsLink)
+            {
+                string real = PathUtil.TryGetRealPath(e.Original);
+                bool pointsToTarget = real != null
+                    && PathUtil.Normalize(real) == PathUtil.Normalize(e.Target);
+                if (pointsToTarget)
+                {
+                    if (asideExists)
+                    {
+                        // 联接已建立、旧副本还没删就崩了。
+                        // 这里**不能**只标记完成：那样会永久留下一个占空间的副本。
+                        it.Situation = "搬移已生效（原位置联接正常），但改名后的旧副本还在，需要清理";
+                        it.AutoFix = "cleanup-aside";
+                        it.AutoFixable = true;
+                    }
+                    else
+                    {
+                        it.Situation = "搬移其实已经完成（原位置已是联接并指向目标盘），只是日志没来得及更新";
+                        it.AutoFixable = true;
+                        it.AutoFix = "mark-completed";
+                    }
+                }
+                else
+                {
+                    it.Situation = "原位置是联接，但指向 " + (real == null ? "(无法解析)" : real)
+                        + "，与记录里的 " + e.Target + " 不符，需要人工检查";
+                    it.SourceGone = true;
+                }
+                return it;
+            }
+
+            if (asideExists)
+            {
+                it.Situation = "中断于「源目录已改名让位、尚未建立联接」—— 这是最需要修复的情况："
+                    + "原路径现在不存在，软件无法按原路径启动";
+                it.CanRestore = true;
+                it.CanComplete = targetExists;
+                if (!targetExists)
+                    it.Situation += "；目标副本不存在，只能还原";
+                return it;
+            }
+
+            if (originalExists)
+            {
+                it.Situation = "中断于「复制或校验阶段」，源目录完好无损，只需清理目标盘的半截副本";
+                it.AutoFixable = true;
+                it.AutoFix = "cleanup-target";
+                return it;
+            }
+
+            it.Situation = "原路径不存在，也没找到改名后的目录 —— 需要人工检查"
+                + "（数据可能在目标盘：" + e.Target + "）";
+            it.SourceGone = true;
+            return it;
+        }
+
+        /// <summary>
+        /// 处理一次中断的操作。
+        /// completeMove = true 时把搬移做完；false 时还原到操作前的状态。
+        /// </summary>
+        public static MoveResult Recover(RecoveryItem it, bool completeMove, Action<string> log)
+        {
+            MoveResult r = new MoveResult();
+            r.JournalId = it.JournalId;
+            if (log == null) log = delegate (string s) { };
+
+            try
+            {
+                // 无歧义的情形：只是日志没更新，或只需清掉半截副本
+                if (it.AutoFix == "mark-completed")
+                {
+                    Journal.UpdateStatus(it.JournalId, "completed", "恢复：确认搬移已完成，补记日志");
+                    log("已确认搬移完成并补记日志：" + it.Original);
+                    r.Success = true; r.Status = "recovered"; r.Message = "已补记日志";
+                    return r;
+                }
+                if (it.AutoFix == "cleanup-target")
+                {
+                    CleanupTarget(it.Target, log);
+                    Journal.UpdateStatus(it.JournalId, "failed", "恢复：源目录完好，已清理目标盘半截副本");
+                    log("源目录完好，已清理目标盘副本。");
+                    r.Success = true; r.Status = "recovered"; r.Message = "已清理目标副本";
+                    return r;
+                }
+                if (it.AutoFix == "cleanup-aside")
+                {
+                    log("联接已生效，删除改名后的旧副本：" + it.AsidePath);
+                    List<string> left = new List<string>();
+                    SafeDelete.DeleteTree(it.AsidePath, left);
+                    if (left.Count > 0) log("  有 " + left.Count + " 项未能删除");
+                    Journal.UpdateStatus(it.JournalId, "completed", "恢复：联接已生效，清理了残留旧副本");
+                    r.Success = true; r.Status = "recovered"; r.Message = "已清理残留旧副本";
+                    return r;
+                }
+
+                if (completeMove)
+                {
+                    if (!it.CanComplete)
+                    {
+                        r.Status = "blocked"; r.Message = "无法完成：目标副本不存在或现场不允许";
+                        return r;
+                    }
+                    log("1/3 在 " + it.Original + " 建立指向 " + it.Target + " 的联接");
+                    Junction.Create(it.Original, it.Target);
+                    string real = PathUtil.TryGetRealPath(it.Original);
+                    if (real == null || PathUtil.Normalize(real) != PathUtil.Normalize(it.Target))
+                        throw new IOException("联接校验失败，真实路径为 " + (real == null ? "(无法解析)" : real));
+
+                    log("2/3 删除改名后的旧副本");
+                    List<string> failures = new List<string>();
+                    SafeDelete.DeleteTree(it.AsidePath, failures);
+                    if (failures.Count > 0) log("  有 " + failures.Count + " 项未能删除：" + it.AsidePath);
+
+                    log("3/3 补记日志");
+                    Journal.UpdateStatus(it.JournalId, "completed", "恢复：完成中断的搬移");
+                    r.Success = true; r.Status = "recovered";
+                    r.Message = "已把中断的搬移做完，原路径现在指向 " + it.Target;
+                    log(r.Message);
+                    return r;
+                }
+
+                // 还原
+                if (!it.CanRestore)
+                {
+                    r.Status = "blocked"; r.Message = "无法还原：找不到改名后的目录";
+                    return r;
+                }
+                log("1/3 把 " + Path.GetFileName(it.AsidePath) + " 改名回 " + it.Original);
+                if (Directory.Exists(PathUtil.IoPath(it.Original)))
+                    throw new IOException("原路径已被占用，无法还原：" + it.Original);
+                Directory.Move(PathUtil.IoPath(it.AsidePath), PathUtil.IoPath(it.Original));
+
+                log("2/3 清理目标盘副本");
+                CleanupTarget(it.Target, log);
+
+                log("3/3 补记日志");
+                Journal.UpdateStatus(it.JournalId, "failed", "恢复：已还原到操作前状态");
+                r.Success = true; r.Status = "restored";
+                r.Message = "已还原到操作前状态，数据回到 " + it.Original;
+                log(r.Message);
+                return r;
+            }
+            catch (Exception ex)
+            {
+                r.Success = false; r.Status = "recover-failed";
+                r.Message = "恢复失败: " + ex.Message;
+                log(r.Message);
+                return r;
+            }
         }
 
         /// <summary>

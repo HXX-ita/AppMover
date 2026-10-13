@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
@@ -31,6 +31,7 @@ namespace AppMover
                     case "move": return CmdMove(args);
                     case "journal": return CmdJournal();
                     case "undo": return CmdUndo(args);
+                    case "recover": return CmdRecover(args);
                     case "feedback": return CmdFeedback(args);
                     case "selftest": return SelfTest.Run();
                     default: Help(); return 1;
@@ -56,6 +57,9 @@ namespace AppMover
             Console.WriteLine("  move <路径>          执行搬移（复制-校验-改名-建联接-删旧）");
             Console.WriteLine("  journal              查看搬移记录（撤销依据）");
             Console.WriteLine("  undo <记录号>        撤销一次已完成的搬移");
+            Console.WriteLine("  recover              处理被中断的搬移（断电/崩溃后的修复）");
+            Console.WriteLine("                       默认列出并自动处理无歧义的；");
+            Console.WriteLine("                       加 --restore <记录号> 还原，--complete <记录号> 做完");
             Console.WriteLine("  feedback             生成脱敏诊断报告，并给出预先填好的反馈链接");
             Console.WriteLine("                       选项: [--path <路径>] [--error \"信息\"] [--unknown] [--open]");
             Console.WriteLine("  selftest             内置回归自测");
@@ -254,6 +258,72 @@ namespace AppMover
                 Console.WriteLine(Feedback.OpenUrl(url) ? "已在浏览器中打开提交页面。" : "无法自动打开浏览器，请手动复制上面的链接。");
             }
             return 0;
+        }
+
+        private static int CmdRecover(string[] args)
+        {
+            string restoreId = ParseOption(args, "--restore", null);
+            string completeId = ParseOption(args, "--complete", null);
+            string wantId = restoreId != null ? restoreId : completeId;
+            bool complete = completeId != null;
+
+            List<Relocator.RecoveryItem> items = Relocator.FindInterrupted();
+
+            if (wantId != null)
+            {
+                Relocator.RecoveryItem target = null;
+                for (int i = 0; i < items.Count; i++) if (items[i].JournalId == wantId) target = items[i];
+                if (target == null) { Console.Error.WriteLine("找不到被中断的记录: " + wantId); return 1; }
+                Console.WriteLine("现场: " + target.Situation);
+                Console.WriteLine();
+                MoveResult rr = Relocator.Recover(target, complete,
+                    delegate (string s) { Console.WriteLine(s); });
+                Console.WriteLine();
+                Console.WriteLine("结果: " + rr.Status + " — " + rr.Message);
+                return rr.Success ? 0 : 3;
+            }
+
+            Console.WriteLine("日志文件: " + Journal.Path);
+            Console.WriteLine("被中断的搬移: " + items.Count + " 项");
+            Console.WriteLine();
+            if (items.Count == 0) { Console.WriteLine("没有需要恢复的操作。"); return 0; }
+
+            int auto = 0, needChoice = 0, manual = 0;
+            for (int i = 0; i < items.Count; i++)
+            {
+                Relocator.RecoveryItem it = items[i];
+                Console.WriteLine("记录号  : " + it.JournalId);
+                Console.WriteLine("原路径  : " + it.Original);
+                Console.WriteLine("目标路径: " + it.Target);
+                if (it.AutoFix == "cleanup-target") Console.WriteLine("改名目录: " + it.AsidePath);
+                Console.WriteLine("现场    : " + it.Situation);
+
+                if (it.AutoFixable)
+                {
+                    auto++;
+                    Console.WriteLine("处理    : 自动");
+                    MoveResult rr = Relocator.Recover(it, false, null);
+                    Console.WriteLine("          " + rr.Status + " — " + rr.Message);
+                }
+                else if (it.CanRestore || it.CanComplete)
+                {
+                    needChoice++;
+                    Console.WriteLine("处理    : 需要你选择（数据都还在，两种都可）");
+                    Console.WriteLine("          还原到原状 : recover --restore " + it.JournalId);
+                    if (it.CanComplete)
+                        Console.WriteLine("          把搬移做完 : recover --complete " + it.JournalId);
+                }
+                else
+                {
+                    manual++;
+                    Console.WriteLine("处理    : 需要人工检查");
+                }
+                Console.WriteLine();
+            }
+
+            Console.WriteLine(string.Format("汇总：自动处理 {0} 项，需要选择 {1} 项，需要人工检查 {2} 项",
+                auto, needChoice, manual));
+            return manual > 0 ? 2 : 0;
         }
 
         private static string SafeTime(string t)
