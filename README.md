@@ -154,6 +154,11 @@ start data\inventory-report.html
 - [x] **M4 发布**：中英 README、LICENSE、贡献指南、issue 表单、GitHub Actions（构建+测试+自动出 Release）
 - [ ] **M5 加固**：更多软件实测、兼容性清单
 
+## 验收报告
+
+目标里的每一条要求对应到实现位置与验证证据，见 **[docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)**。
+其中也如实列出了已知限制（未做的集成测试、兼容性清单尚薄、界面未经人工视觉检查等）。
+
 ## 发布
 
 打一个标签就会自动构建、测试并产出 Release：
