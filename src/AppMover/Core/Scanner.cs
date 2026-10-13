@@ -52,6 +52,8 @@ namespace AppMover.Core
             List<ScanRow> rows = new List<ScanRow>();
             string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
+            // 范围约定：只支持 Windows 装在 C 盘（与 Classifier 的规则表一致）。
+            // 写成字面量而不是从 %SystemRoot% 推导，是刻意的 —— 见 Classifier 的类注释。
             string[] roots = new string[]
             {
                 @"C:\Program Files",
