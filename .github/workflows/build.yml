@@ -132,15 +132,22 @@ jobs:
           $tag = $env:GITHUB_REF -replace '^refs/tags/', ''
           $zip = Get-ChildItem $PWD -Filter '*.zip' | Select-Object -First 1
 
-          # 发布说明 = 使用提示 + CHANGELOG 里这个版本的那一节
-          # （早先写死在 workflow 里，每次发版都得改 YAML；现在只要维护 CHANGELOG.md）
+          # 发布说明的优先级：
+          #   1. RELEASE_NOTES.md —— 发版时专门写给用户看的（含"下载哪个、别下 Source code"）
+          #   2. 没有就退回 CHANGELOG.md 里这个版本的那一节 + 通用使用提示
+          # 早先写死在 YAML 里，每次发版都要改；现在只维护文档。
           $usage = @"
-          Windows 软件搬家工具。下载 zip 解压后双击 AppMover.exe 即可使用，无需安装任何运行时。
+          Windows 软件搬家工具。下载 Assets 里带 win-x64 的那个 zip，解压后双击 AppMover.exe 即可使用，无需安装任何运行时。
+          不要下载 "Source code (zip)"，那是源代码不是程序。
 
           详细说明见 README.md / README.en.md。
           "@
-          $notes = $usage
-          if (Test-Path CHANGELOG.md) {
+          $notes = $null
+          if (Test-Path RELEASE_NOTES.md) {
+            $notes = Get-Content RELEASE_NOTES.md -Raw
+            Write-Host "使用 RELEASE_NOTES.md 作为发布说明"
+          }
+          if (-not $notes -and (Test-Path CHANGELOG.md)) {
             $ver = $tag -replace '^v', ''
             $lines = Get-Content CHANGELOG.md
             # 找到 `## v1.2.3` 这一行，取到下一个 `## ` 之前
@@ -155,6 +162,7 @@ jobs:
               Write-Host "CHANGELOG.md 里没有 $ver 这一节，用默认说明"
             }
           }
+          if (-not $notes) { $notes = $usage }
           # 不带 BOM 写，免得 BOM 混进 Release 正文
           [System.IO.File]::WriteAllText("$PWD/release-notes.md", $notes, (New-Object System.Text.UTF8Encoding($false)))
 
