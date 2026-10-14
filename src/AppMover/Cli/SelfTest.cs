@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -46,6 +46,7 @@ namespace AppMover
             TestUndoRefusals();
             TestFullRelocateAndUndo();
             TestRealMachinePaths();
+            TestScratchLocationUsable();
 
             Console.WriteLine();
             Console.WriteLine("==================================");
@@ -55,6 +56,75 @@ namespace AppMover
         }
 
         // ---------------- 断言 ----------------
+
+        private static string _scratchRoot;
+
+        /// <summary>
+        /// 自测用的临时目录根。
+        ///
+        /// 这个方法是**被发布包打脸之后补的**：早先所有测试都直接在可执行文件所在目录下
+        /// 建临时目录。本地与 CI 都在工作区（D 盘）里跑，一切正常；但有人把发布包解压到
+        /// C:\Users\...\AppData\Local\Temp\ 再跑 selftest，临时目录就落在系统临时目录里，
+        /// 而**规则正确地判定「系统临时目录 → 禁止搬移」** —— 于是搬移类测试被自己的规则
+        /// 拦住，报出 6 项「失败」。那不是代码坏了，是测试不是位置无关的。
+        ///
+        /// 做法：优先用可执行文件所在目录（构建与 CI 场景）；若该位置会被判定为禁止搬移，
+        /// 就退到用户目录下的专门子目录（不在 AppData\Local\Temp 下，因此只算「用户目录」
+        /// 而非「系统临时目录」）。判断复用产品自己的规则，而不是另写一套逻辑。
+        /// </summary>
+        private static string ScratchRoot()
+        {
+            if (_scratchRoot != null) return _scratchRoot;
+
+            string exeDir = AppDomain.CurrentDomain.BaseDirectory;
+            if (!IsForbiddenScratch(exeDir))
+            {
+                _scratchRoot = exeDir;
+                return _scratchRoot;
+            }
+
+            string alt = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "AppMover-selftest");
+            _scratchRoot = alt;
+            Console.WriteLine("  （可执行文件位于被禁止搬移的位置，自测临时目录改用 " + alt + "）");
+            return _scratchRoot;
+        }
+
+        /// <summary>该位置是否会被判定为「禁止搬移」—— 那样就不能拿来当搬移测试的现场。</summary>
+        private static bool IsForbiddenScratch(string dir)
+        {
+            try
+            {
+                Classifier cls = new Classifier(new SoftwareIndex());
+                Classification c = cls.Classify(dir, Path.GetFileName(dir.TrimEnd('\\')),
+                    Stats(1, 1024), false);
+                return c.Category == Category.Forbidden;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>确认自测临时目录本身可用 —— 专治「测试不是位置无关」这个问题。</summary>
+        private static void TestScratchLocationUsable()
+        {
+            Group("自测环境自身（防止测试不是位置无关的）");
+            string root = ScratchRoot();
+            Check(!IsForbiddenScratch(root), "自测临时目录不会被判定为禁止搬移：" + root);
+            try
+            {
+                string probe = Path.Combine(root, "_selftest_scratch_probe");
+                Directory.CreateDirectory(PathUtil.IoPath(probe));
+                File.WriteAllText(PathUtil.IoPath(Path.Combine(probe, "a.txt")), "a");
+                Check(Directory.Exists(PathUtil.IoPath(probe)), "自测临时目录可写");
+                List<string> j = new List<string>();
+                SafeDelete.DeleteTree(probe, j);
+                Check(!Directory.Exists(PathUtil.IoPath(probe)), "自测临时目录可清理");
+            }
+            catch (Exception ex)
+            {
+                _fail++;
+                Console.WriteLine("  FAIL 自测临时目录不可用: " + ex.GetType().Name + ": " + ex.Message);
+            }
+        }
 
         private static void Group(string name)
         {
@@ -250,7 +320,7 @@ namespace AppMover
         private static void TestJunctionRoundTrip()
         {
             Group("目录联接 创建/读取/删除 往返（搬移引擎的核心机制）");
-            string baseDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_selftest_junction");
+            string baseDir = Path.Combine(ScratchRoot(), "_selftest_junction");
             string link = Path.Combine(baseDir, "link");
             try
             {
@@ -307,7 +377,7 @@ namespace AppMover
         private static void TestFullRelocateAndUndo()
         {
             Group("端到端：完整搬移 + 撤销");
-            string baseDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_selftest_move");
+            string baseDir = Path.Combine(ScratchRoot(), "_selftest_move");
             string journalPath = Path.Combine(baseDir, "journal.jsonl");
             string oldJournalEnv = Environment.GetEnvironmentVariable("APPMOVER_JOURNAL");
             try
@@ -393,7 +463,7 @@ namespace AppMover
         private static void TestOccupancyDetection()
         {
             Group("占用检测（Restart Manager）");
-            string dir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_selftest_occ");
+            string dir = Path.Combine(ScratchRoot(), "_selftest_occ");
             try
             {
                 if (Directory.Exists(dir)) { List<string> junk = new List<string>(); SafeDelete.DeleteTree(dir, junk); }
@@ -446,8 +516,8 @@ namespace AppMover
         private static void TestHardlinkDetection()
         {
             Group("硬链接检测");
-            string dir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_selftest_hardlink");
-            string dst = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_selftest_hardlink_dst");
+            string dir = Path.Combine(ScratchRoot(), "_selftest_hardlink");
+            string dst = Path.Combine(ScratchRoot(), "_selftest_hardlink_dst");
             try
             {
                 if (Directory.Exists(dir)) { List<string> j = new List<string>(); SafeDelete.DeleteTree(dir, j); }
@@ -501,7 +571,7 @@ namespace AppMover
         private static void TestLongPathHandling()
         {
             Group("长路径（超过 260 字符）");
-            string root = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_selftest_longpath");
+            string root = Path.Combine(ScratchRoot(), "_selftest_longpath");
             try
             {
                 if (Directory.Exists(root)) { List<string> j = new List<string>(); SafeDelete.DeleteTree(root, j); }
@@ -538,7 +608,7 @@ namespace AppMover
         private static void TestGuardBlockers()
         {
             Group("预检阻止项");
-            string baseDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_selftest_guard");
+            string baseDir = Path.Combine(ScratchRoot(), "_selftest_guard");
             try
             {
                 if (Directory.Exists(baseDir)) { List<string> j = new List<string>(); SafeDelete.DeleteTree(baseDir, j); }
@@ -621,7 +691,7 @@ namespace AppMover
         private static void TestCrashRecovery()
         {
             Group("崩溃恢复（断电 / 被强杀后的现场修复）");
-            string baseDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_selftest_crash");
+            string baseDir = Path.Combine(ScratchRoot(), "_selftest_crash");
             string journalPath = Path.Combine(baseDir, "journal.jsonl");
             string oldJournal = Environment.GetEnvironmentVariable("APPMOVER_JOURNAL");
             try
@@ -768,7 +838,7 @@ namespace AppMover
             Check(!Security.NeedsElevation(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)),
                 "用户目录不需要提权");
 
-            string target = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_selftest_elev_target");
+            string target = Path.Combine(ScratchRoot(), "_selftest_elev_target");
             string testDir = @"C:\Program Files\_appmover_junction_probe";
             try
             {
@@ -847,7 +917,7 @@ namespace AppMover
             Check(PathUtil.TrimTrailingSeparator(@"D:\Foo\\") == @"D:\Foo", "多重尾部分隔符一并去掉");
             Check(PathUtil.TrimTrailingSeparator(@"C:/") == @"C:\", "正斜杠形式的盘根也归一");
 
-            string baseDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_selftest_driveroot");
+            string baseDir = Path.Combine(ScratchRoot(), "_selftest_driveroot");
             try
             {
                 if (Directory.Exists(baseDir)) { List<string> j = new List<string>(); SafeDelete.DeleteTree(baseDir, j); }
@@ -857,7 +927,7 @@ namespace AppMover
 
                 Classifier cls = new Classifier(new SoftwareIndex());
                 // 用当前程序所在盘的盘根作为目标，正是界面会传的形式
-                string volumeRoot = Path.GetPathRoot(AppDomain.CurrentDomain.BaseDirectory);
+                string volumeRoot = Path.GetPathRoot(ScratchRoot());
                 MovePlan plan = Relocator.BuildPlan(src, volumeRoot, cls, null, false, true);
 
                 Check(!HasBlocker(plan, "目标盘目录不存在"),
@@ -889,7 +959,7 @@ namespace AppMover
         private static void TestUndoRefusals()
         {
             Group("撤销的拒绝路径（宁可拒绝，不可猜）");
-            string baseDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_selftest_undoguard");
+            string baseDir = Path.Combine(ScratchRoot(), "_selftest_undoguard");
             string journalPath = Path.Combine(baseDir, "journal.jsonl");
             string oldJournal = Environment.GetEnvironmentVariable("APPMOVER_JOURNAL");
             try
