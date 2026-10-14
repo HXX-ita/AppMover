@@ -19,7 +19,7 @@
 [CmdletBinding()]
 param(
     [ValidateSet('Debug','Release')][string]$Config = 'Release',
-    [string]$Version = '0.1.0',
+    [string]$Version = '0.1.1',
     [string]$Run,
     [switch]$SmokeUi
 )

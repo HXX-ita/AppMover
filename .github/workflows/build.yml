@@ -131,6 +131,31 @@ jobs:
         run: |
           $tag = $env:GITHUB_REF -replace '^refs/tags/', ''
           $zip = Get-ChildItem $PWD -Filter '*.zip' | Select-Object -First 1
-          gh release create $tag $zip.FullName `
-            --title "AppMover $tag" `
-            --notes "Windows 软件搬家工具。下载 zip 解压后双击 AppMover.exe 即可使用，无需安装任何运行时。`n`n详细说明见 README.md / README.en.md。"
+
+          # 发布说明 = 使用提示 + CHANGELOG 里这个版本的那一节
+          # （早先写死在 workflow 里，每次发版都得改 YAML；现在只要维护 CHANGELOG.md）
+          $usage = @"
+          Windows 软件搬家工具。下载 zip 解压后双击 AppMover.exe 即可使用，无需安装任何运行时。
+
+          详细说明见 README.md / README.en.md。
+          "@
+          $notes = $usage
+          if (Test-Path CHANGELOG.md) {
+            $ver = $tag -replace '^v', ''
+            $lines = Get-Content CHANGELOG.md
+            # 找到 `## v1.2.3` 这一行，取到下一个 `## ` 之前
+            $start = ($lines | Select-String -Pattern "^##\s+v?$([regex]::Escape($ver))(\s|$)" | Select-Object -First 1).LineNumber
+            if ($start) {
+              $rest = @($lines[$start..($lines.Count - 1)])
+              $end = ($rest | Select-String -Pattern '^##\s' | Select-Object -First 1).LineNumber
+              $section = if ($end -and $end -gt 1) { $rest[0..($end - 2)] } else { $rest }
+              $notes = ($section -join "`n") + "`n`n---`n`n" + $usage
+              Write-Host "已从 CHANGELOG.md 取到 $ver 的发布说明（$($section.Count) 行）"
+            } else {
+              Write-Host "CHANGELOG.md 里没有 $ver 这一节，用默认说明"
+            }
+          }
+          # 不带 BOM 写，免得 BOM 混进 Release 正文
+          [System.IO.File]::WriteAllText("$PWD/release-notes.md", $notes, (New-Object System.Text.UTF8Encoding($false)))
+
+          gh release create $tag $zip.FullName --title "AppMover $tag" --notes-file release-notes.md

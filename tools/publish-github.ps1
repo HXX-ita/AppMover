@@ -6,7 +6,7 @@
     2. 帮你打开 GitHub 的「新建仓库」页面，让你建一个**空仓库**
     3. 问你的 GitHub 用户名，配好远程地址，推送 main 分支
        （推送时 Git Credential Manager 会自动弹浏览器让你登录）
-    4. 打 v0.1.0 标签并推送 —— 这一推会触发 CI 自动构建并产出 Release
+    4. 打 v0.1.1 标签并推送 —— 这一推会触发 CI 自动构建并产出 Release
 
   用法：双击同目录的「发布到GitHub.cmd」，或
         powershell -ExecutionPolicy Bypass -File tools\publish-github.ps1
@@ -15,7 +15,7 @@
 param(
     [string]$UserName,
     [string]$RepoName = 'AppMover',
-    [string]$Tag = 'v0.1.0',
+    [string]$Tag = 'v0.1.1',
     [switch]$SkipOpen,
     [switch]$DryRun
 )

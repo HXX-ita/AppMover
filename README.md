@@ -164,8 +164,8 @@ start data\inventory-report.html
 打一个标签就会自动构建、测试并产出 Release：
 
 ```powershell
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
 CI 会跑内核回归（硬性门禁，不通过就不出 Release）、界面冒烟（参考项）、
